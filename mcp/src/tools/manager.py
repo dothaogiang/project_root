@@ -1,0 +1,50 @@
+"""
+CustomToolManager: đọc Resources/tools.yaml, tổ chức tool theo category.
+
+Đây là nơi DUY NHẤT đọc file cấu hình -> khi thêm/sửa/xóa tool, chỉ cần
+sửa tools.yaml, KHÔNG cần đụng vào code Python (trừ việc viết method
+tương ứng trong FeatureManager cho tool hoàn toàn mới).
+"""
+import os
+import yaml
+from config.configs import config_object
+from logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class CustomToolManager:
+    def __init__(self):
+        self.tools_by_category = self._load_tools()
+
+    @staticmethod
+    def _load_tools() -> dict:
+        tools_file = os.path.join(config_object.RESOURCES_DIR, "tools.yaml")
+
+        if not os.path.exists(tools_file):
+            logger.error(f"Tool file not found: {tools_file}")
+            raise FileNotFoundError(f"Tool file not found: {tools_file}")
+
+        with open(tools_file, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        tools_by_category = {}
+        for tool in data.get("tools", []):
+            category = tool["category"]
+            tools_by_category.setdefault(category, {})
+            tools_by_category[category][tool["name_tool"]] = {
+                "name_tool": tool["name_tool"],
+                "description": tool["description"],
+                "inputSchema": tool.get("inputSchema"),
+            }
+
+        total = sum(len(v) for v in tools_by_category.values())
+        logger.info(f"Đã load {total} tool(s) từ tools.yaml: {list(tools_by_category.keys())}")
+        return tools_by_category
+
+    def get_tools_by_category(self, category: str) -> dict:
+        return self.tools_by_category.get(category, {})
+
+    def reload(self):
+        """Cho phép reload tools.yaml khi runtime mà không cần restart server."""
+        self.tools_by_category = self._load_tools()

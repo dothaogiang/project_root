@@ -1,0 +1,59 @@
+tools:
+  # ────────────────────────────────────────────────────────────────
+  # TOOL 1: Tìm hồ sơ theo từ khóa tự do (tầng metadata - archive-level)
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: search_profile
+    description: >
+      Tìm kiếm hồ sơ/tài liệu lưu trữ (archive) theo từ khóa tự do:
+      tên người, chức vụ, ngày tháng, mã hồ sơ, nghề nghiệp, kho lưu
+      trữ... Hỗ trợ tìm kiếm ngữ nghĩa (semantic) kết hợp từ khóa
+      chính xác (hybrid search). Nếu từ khóa mơ hồ (VD: "làm nông"),
+      hệ thống sẽ tự động mở rộng ra các từ liên quan về nghĩa (nông
+      dân, nông nghiệp) và trả về nhiều hồ sơ liên quan. Nếu từ khóa
+      cụ thể (tên đầy đủ, mã hồ sơ, ngày sinh...), kết quả sẽ hẹp và
+      chính xác hơn. Dùng tool này để XÁC ĐỊNH hồ sơ nào liên quan
+      trước khi hỏi chi tiết bên trong hồ sơ đó bằng get_profile_detail.
+    inputSchema:
+      type: object
+      properties:
+        keyword:
+          type: string
+          description: "Từ khóa tìm kiếm tự do, có thể là tên, ngày sinh, nghề nghiệp, mã hồ sơ..."
+        top_k:
+          type: integer
+          description: "Số hồ sơ tối đa trả về trước khi lọc theo score-gap. Mặc định 10."
+      required:
+        - keyword
+
+  # ────────────────────────────────────────────────────────────────
+  # TOOL 2: Trả lời câu hỏi chi tiết TRONG 1 hồ sơ cụ thể (tầng nội
+  # dung PDF đã OCR/extract - chunk-level, đây là phần RAG thật sự)
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: get_profile_detail
+    description: >
+      Trả lời câu hỏi CHI TIẾT về nội dung bên trong một hồ sơ đã xác
+      định (VD: "người này tốt nghiệp năm nào?", "chức vụ hiện tại là
+      gì?", "số quyết định nâng lương?"). Thông tin này KHÔNG nằm ở
+      metadata mà nằm trong nội dung các file PDF đính kèm hồ sơ (đã
+      được OCR/trích xuất và đánh chỉ mục sẵn). BẮT BUỘC phải có
+      archive_id (lấy từ kết quả của search_profile) để giới hạn tìm
+      kiếm đúng trong phạm vi hồ sơ đó, tránh lẫn thông tin giữa các
+      hồ sơ khác nhau. Tool trả về các đoạn văn bản liên quan nhất,
+      không tự tổng hợp câu trả lời.
+    inputSchema:
+      type: object
+      properties:
+        archive_id:
+          type: string
+          description: "ID của hồ sơ cần tra cứu chi tiết, lấy từ kết quả search_profile."
+        question:
+          type: string
+          description: "Câu hỏi cụ thể cần tìm câu trả lời bên trong hồ sơ."
+        top_k:
+          type: integer
+          description: "Số đoạn văn bản liên quan nhất trả về. Mặc định 5."
+      required:
+        - archive_id
+        - question

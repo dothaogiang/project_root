@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual env ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Biến môi trường / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Dữ liệu runtime (KHÔNG commit) ---
+data/
+sync_state.db
+*.db
+*.sqlite3
+
+# --- Qdrant local storage (nếu chạy ngoài docker) ---
+qdrant_storage/
+
+# --- Log ---
+*.log
+logs/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+docker-compose.override.yaml
+
+# --- Model cache (fastembed tải model về local) ---
+.cache/
+fastembed_cache/
