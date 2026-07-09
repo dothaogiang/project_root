@@ -1,10 +1,3 @@
-"""
-CustomToolManager: đọc Resources/tools.yaml, tổ chức tool theo category.
-
-Đây là nơi DUY NHẤT đọc file cấu hình -> khi thêm/sửa/xóa tool, chỉ cần
-sửa tools.yaml, KHÔNG cần đụng vào code Python (trừ việc viết method
-tương ứng trong FeatureManager cho tool hoàn toàn mới).
-"""
 import os
 import yaml
 from config.configs import config_object

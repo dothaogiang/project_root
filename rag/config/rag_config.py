@@ -19,9 +19,23 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 class RagConfig:
     # --- Archive API (nguồn dữ liệu gốc) ---
     ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.46:4000")
-    ARCHIVE_API_PATH = os.getenv("ARCHIVE_API_PATH", "/api/public/archives")
+    ARCHIVE_API_PATH = os.getenv("ARCHIVE_API_PATH", "/api/public/archive")
     ARCHIVE_API_PAGE_SIZE = int(os.getenv("ARCHIVE_API_PAGE_SIZE", "100"))
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+
+    # --- Staff Archive Metadata API ---
+    STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
+
+    # --- File Proxy API ---
+    FILE_PROXY_PATH = os.getenv("FILE_PROXY_PATH", "/api/public/files/proxy")
+
+    # --- Chatbot session token (X-Chatbot-Token) ---
+    CHATBOT_TOKEN_PATH = os.getenv("CHATBOT_TOKEN_PATH", "/api/v1/chatbot/session-token")
+    CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID") or None
+    CHATBOT_CLIENT_SECRET = os.getenv("CHATBOT_CLIENT_SECRET") or None
+    # Refresh token sớm hơn hạn thật bao nhiêu giây, tránh race condition
+    # ngay sát lúc hết hạn (request đang bay thì token hết hạn giữa chừng)
+    TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("TOKEN_REFRESH_BUFFER_SECONDS", "60"))
 
     # --- Qdrant ---
     QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -30,7 +44,7 @@ class RagConfig:
     COLLECTION_CHUNKS = os.getenv("RAG_COLLECTION_CHUNKS", "document_chunks")
 
     # --- Embedding models (fastembed, chạy local) ---
-    DENSE_MODEL_NAME = os.getenv("DENSE_MODEL_NAME", "BAAI/bge-m3")
+    DENSE_MODEL_NAME = os.getenv("DENSE_MODEL_NAME", "multilingual-e5-large")
     SPARSE_MODEL_NAME = os.getenv("SPARSE_MODEL_NAME", "Qdrant/bm25")
     DENSE_VECTOR_SIZE = int(os.getenv("DENSE_VECTOR_SIZE", "1024"))  # bge-m3 output dim
 
@@ -39,6 +53,10 @@ class RagConfig:
     OCR_MIN_CHARS_PER_PAGE = int(os.getenv("OCR_MIN_CHARS_PER_PAGE", "50"))
     OCR_DPI = int(os.getenv("OCR_DPI", "200"))
     OCR_CONCURRENCY = int(os.getenv("OCR_CONCURRENCY", "4"))
+    # Đường dẫn tới binary tesseract.exe — chỉ cần set nếu KHÔNG có tesseract
+    # trong PATH hệ thống (thường gặp trên Windows nếu bỏ qua bước add PATH
+    # lúc cài đặt). Để trống nếu tesseract đã chạy được từ terminal.
+    TESSERACT_CMD = os.getenv("TESSERACT_CMD", "")
 
     # --- Chunking ---
     CHUNK_SIZE_CHARS = int(os.getenv("CHUNK_SIZE_CHARS", "1200"))

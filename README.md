@@ -11,18 +11,28 @@ kiếm ngữ nghĩa (semantic) kết hợp từ khóa (hybrid search).
 
 ## Dự án làm gì
 
-1. **Đồng bộ dữ liệu (ingestion):** định kỳ lấy hồ sơ từ Archive API →
-   tải file PDF đính kèm → trích text (đọc trực tiếp hoặc OCR nếu là
-   bản scan) → chia nhỏ (chunk) → sinh embedding (dense + sparse) →
-   lưu vào Qdrant.
-2. **Tra cứu (retrieval) qua MCP:** chatbot gọi tool `search_profile`
-   với từ khóa tự do (tên người, mã hồ sơ...) để tìm ĐÚNG hồ sơ nào,
-   sau đó gọi `get_profile_detail` với `archive_id` + câu hỏi để lấy
-   đoạn nội dung PDF liên quan nhất bên trong hồ sơ đó — đây là phần
-   RAG thật sự.
-3. Kết quả trả về đã được lọc để loại bớt "hồ sơ rác" theo khoảng
-   cách điểm số (score-gap), giúp chatbot phía trên không phải tự đãi
-   cát tìm vàng giữa hàng chục kết quả không liên quan.
+Hệ thống expose **6 tool MCP**, chia làm 2 nhóm khác bản chất:
+
+**Nhóm A — Semantic search qua Qdrant** (dữ liệu đã ingest sẵn, xem
+`rag/`):
+
+- `search_profile` — tìm hồ sơ bằng hybrid search (semantic + từ khóa)
+- `get_profile_detail` — hỏi sâu nội dung PDF (đã OCR) bên trong 1 hồ sơ
+
+**Nhóm B — Live query trực tiếp vào Public Archive API** (không qua
+Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
+
+- `search_archives` — tìm hồ sơ theo field lọc chính xác (status, kho, ngôn ngữ, khoảng ngày...)
+- `get_archive_detail` — lấy toàn bộ chi tiết 1 hồ sơ theo UUID (metadata, project, lịch sử mượn)
+- `get_staff_archive_metadata` — lấy cấu trúc/schema của hồ sơ cán bộ
+- `get_file_proxy` — lấy nội dung file gốc (PDF, ảnh...) đính kèm hồ sơ
+
+Quy tắc chọn tool cho chatbot: chưa biết `archive_id` → luôn
+`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; đã
+biết `archive_id` mà cần chi tiết đầy đủ (kể cả lịch sử mượn) →
+`get_archive_detail`; cần hỏi sâu nội dung PDF → `get_profile_detail`;
+cần schema hồ sơ cán bộ → `get_staff_archive_metadata`; cần xem/tải
+file → `get_file_proxy`.
 
 ## Cấu trúc dự án
 
@@ -33,13 +43,16 @@ project_root/
 ├── mcp/                          # Chỉ lo giao thức MCP — nhận request, trả response
 │   ├── src/
 │   │   ├── server.py             # Entry point, chạy MCP server (streamable-http)
-│   │   ├── feature_manager.py    # "Dịch" kết quả RetrievalService -> format tool trả về
+│   │   ├── feature_manager.py    # Nơi định nghĩa method cho từng tool (khớp tên với tools.yaml)
+│   │   ├── archive_api/          # Client LIVE query trực tiếp Public Archive API (nhóm B)
+│   │   │   ├── client.py         #   search_archives, get_archive_detail, get_staff_archive_metadata, get_file_proxy
+│   │   │   └── token_manager.py  #   Quản lý X-Chatbot-Token (cache + auto refresh khi 401)
 │   │   ├── logger.py
-│   │   ├── config/configs.py     # Cấu hình riêng của MCP (port, resources dir...)
+│   │   ├── config/configs.py     # Cấu hình riêng của MCP (port, resources dir, archive API paths, token...)
 │   │   └── tools/
 │   │       ├── manager.py
 │   │       └── registry.py       # Đọc tools.yaml, tự đăng ký tool theo tên hàm khớp
-│   ├── Resources/tools.yaml      # Khai báo tool + input schema (search_profile, get_profile_detail)
+│   ├── Resources/tools.yaml      # Khai báo 6 tool + input schema
 │   └── requirements.txt          # Dependency riêng của mcp/
 │
 ├── rag/                          # Chỉ lo dữ liệu — ingest vào Qdrant & truy vấn ra
