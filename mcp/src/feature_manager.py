@@ -21,9 +21,16 @@ from archive_api.client import MAX_INLINE_FILE_BYTES, get_archive_api_client
 from config.configs import config_object
 from rag.retrieval_factory import get_retrieval_service
 from logger import get_logger
+from urllib.parse import urlparse, parse_qs
+from typing import Optional
 
 logger = get_logger(__name__)
-
+def _extract_file_key(file_url: str) -> Optional[str]:
+    """Tách 'key' từ URL dạng .../files/proxy?key=xxx — trả về đã decode sẵn."""
+    parsed = urlparse(file_url)
+    qs = parse_qs(parsed.query)
+    values = qs.get("key")
+    return values[0] if values else None
 
 def catch_tool_errors(func):
     """
@@ -141,81 +148,128 @@ class FeatureManager:
     @staticmethod
     @catch_tool_errors
     async def search_archives(
-        keyword: str = None,
-        status: str = None,
-        warehouse_id: str = None,
-        language: str = None,
-        maintenance: bool = None,
-        created_from: str = None,
-        created_to: str = None,
-        updated_from: str = None,
-        updated_to: str = None,
-        page: int = 0,
-        size: int = 20,
+            keyword: str = None,
+            status: str = None,
+            warehouse_id: str = None,
+            language: str = None,
+            maintenance: str = None,
+            created_from: str = None,
+            created_to: str = None,
+            updated_from: str = None,
+            updated_to: str = None,
+            page: int = 0,
+            size: int = 20,
     ) -> dict:
         """
-        Tìm kiếm danh sách hồ sơ lưu trữ trực tiếp trên hệ thống, lọc
-        theo field CHÍNH XÁC (status, kho, ngôn ngữ, khoảng ngày tạo/
-        sửa...). Dùng khi người dùng hỏi "tìm hồ sơ trong kho X", "hồ sơ
-        tiếng Việt", "hồ sơ tạo trong khoảng ngày...". Nếu chưa biết
-        archive_id, LUÔN dùng tool này trước.
-
-        CHỈ trả về ĐÚNG 1 TRANG mỗi lần gọi (mặc định page=0, size=20) —
-        không tự động gộp nhiều trang, để tránh dồn quá nhiều hồ sơ vào
-        1 lần trả lời. Nếu KHÔNG thấy hồ sơ phù hợp trong kết quả trang
-        này VÀ "last" trong kết quả là false (còn trang tiếp theo), hãy
-        GỌI LẠI tool này với page tăng thêm 1 để tìm tiếp — thường trang
-        đầu đã đủ vì filter đã thu hẹp kết quả, chỉ cần tìm tiếp khi
-        thật sự chưa thấy.
+        Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keyword/filter
+        trên hệ thống live trước. CHỈ khi không có kết quả nào (0 hồ sơ)
+        VÀ có keyword, tool mới tự động mở rộng sang semantic search
+        trên dữ liệu đã index sẵn (bắt các trường hợp keyword mơ hồ về
+        nghĩa, VD "làm nông" -> "nông dân"). Người gọi không cần tự
+        chọn cách tìm, tool tự quyết định.
         """
         client = get_archive_api_client()
         result = await client.search_archives(
-            keyword=keyword,
-            status=status,
-            warehouse_id=warehouse_id,
-            language=language,
-            maintenance=maintenance,
-            created_from=created_from,
-            created_to=created_to,
-            updated_from=updated_from,
-            updated_to=updated_to,
-            page=page,
-            size=size,
+            keyword=keyword, status=status, warehouse_id=warehouse_id,
+            language=language, maintenance=maintenance,
+            created_from=created_from, created_to=created_to,
+            updated_from=updated_from, updated_to=updated_to,
+            page=page, size=size,
         )
-        return result
+
+        for record in result.get("content", []):
+            record["hasFiles"] = bool(record.get("projects"))
+            for project in record.get("projects", []):
+                project["fileKeys"] = [
+                    _extract_file_key(u) for u in project.get("fileUrls", [])
+                ]
+
+        if result.get("content"):
+            result["search_mode"] = "keyword"
+            result["found"] = True
+            return result
+
+        has_other_filters = any([status, warehouse_id, language, maintenance,
+                                 created_from, created_to, updated_from, updated_to])
+        if not keyword or has_other_filters:
+            result["search_mode"] = "keyword"
+            result["found"] = False
+            result["message"] = (
+                "Không tìm thấy hồ sơ nào khớp với điều kiện tìm kiếm. "
+                "Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin hồ sơ."
+            )
+            return result
+
+        service = get_retrieval_service()
+        profiles = service.search_profiles(keyword=keyword, top_k=size)
+
+        if not profiles:
+            return {
+                "search_mode": "semantic_fallback",
+                "keyword": keyword,
+                "found": False,
+                "message": (
+                    "Đã tìm chính xác lẫn tìm theo nghĩa gần đúng nhưng không thấy hồ sơ nào phù hợp. "
+                    "Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin hồ sơ."
+                ),
+                "content": [],
+                "page": {"size": size, "number": 0, "totalElements": 0, "totalPages": 0},
+            }
+
+        return {
+            "search_mode": "semantic_fallback",
+            "keyword": keyword,
+            "found": True,
+            "content": [
+                {
+                    "id": p.archive_id,
+                    "title": p.title,
+                    "arcFileCode": p.arc_file_code,
+                    "shelfCode": p.shelf_code,
+                    "shelfLevelCode": p.shelf_level_code,
+                    "warehouseName": p.warehouse_name,
+                    "startDate": p.start_date,
+                    "endDate": p.end_date,
+                    "staffMetadata": p.staff_metadata,
+                    "_score": p.score,
+                }
+                for p in profiles
+            ],
+            "page": {"size": size, "number": 0, "totalElements": len(profiles), "totalPages": 1},
+        }
 
     # ────────────────────────────────────────────────────────────────
     # TOOL 4: Get Archive Detail — lấy toàn bộ chi tiết 1 hồ sơ (metadata,
     # project, lịch sử mượn) theo UUID đã biết trước.
     # ────────────────────────────────────────────────────────────────
-    @staticmethod
-    @catch_tool_errors
-    async def get_archive_detail(archive_id: str) -> dict:
-        """
-        Lấy TOÀN BỘ chi tiết 1 hồ sơ (metadata, project, borrowItems -
-        lịch sử mượn hồ sơ) trực tiếp từ hệ thống lưu trữ theo UUID.
-        CHỈ dùng khi ĐÃ BIẾT archive_id (lấy từ search_archives hoặc
-        search_profile) — không dùng để tìm kiếm nhiều hồ sơ.
-        """
-        client = get_archive_api_client()
-        return await client.get_archive_detail(archive_id)
+    # @staticmethod
+    # @catch_tool_errors
+    # async def get_archive_detail(archive_id: str) -> dict:
+    #     """
+    #     Lấy TOÀN BỘ chi tiết 1 hồ sơ (metadata, project, borrowItems -
+    #     lịch sử mượn hồ sơ) trực tiếp từ hệ thống lưu trữ theo UUID.
+    #     CHỈ dùng khi ĐÃ BIẾT archive_id (lấy từ search_archives hoặc
+    #     search_profile) — không dùng để tìm kiếm nhiều hồ sơ.
+    #     """
+    #     client = get_archive_api_client()
+    #     return await client.get_archive_detail(archive_id)
 
     # ────────────────────────────────────────────────────────────────
     # TOOL 5: Staff Archive Metadata — cấu trúc dữ liệu hồ sơ cán bộ
     # (schema field, documentTypes), không phải tìm hồ sơ cụ thể.
     # ────────────────────────────────────────────────────────────────
-    @staticmethod
-    @catch_tool_errors
-    async def get_staff_archive_metadata(only_metadata: bool = True) -> dict:
-        """
-        Lấy cấu trúc dữ liệu (schema) của hồ sơ cán bộ: danh sách các
-        trường metadata, và nếu only_metadata=false thì lấy thêm cả
-        documentTypes. Dùng khi người dùng hỏi "hồ sơ cán bộ gồm những
-        trường nào", "cấu trúc hồ sơ cán bộ", "document types" — KHÔNG
-        dùng để tìm một hồ sơ cụ thể.
-        """
-        client = get_archive_api_client()
-        return await client.get_staff_archive_metadata(only_metadata=only_metadata)
+    # @staticmethod
+    # @catch_tool_errors
+    # async def get_staff_archive_metadata(only_metadata: bool = True) -> dict:
+    #     """
+    #     Lấy cấu trúc dữ liệu (schema) của hồ sơ cán bộ: danh sách các
+    #     trường metadata, và nếu only_metadata=false thì lấy thêm cả
+    #     documentTypes. Dùng khi người dùng hỏi "hồ sơ cán bộ gồm những
+    #     trường nào", "cấu trúc hồ sơ cán bộ", "document types" — KHÔNG
+    #     dùng để tìm một hồ sơ cụ thể.
+    #     """
+    #     client = get_archive_api_client()
+    #     return await client.get_staff_archive_metadata(only_metadata=only_metadata)
 
     # ────────────────────────────────────────────────────────────────
     # TOOL 6: File Proxy — lấy nội dung file gốc đính kèm hồ sơ (PDF,
@@ -225,12 +279,10 @@ class FeatureManager:
     @catch_tool_errors
     async def get_file_proxy(key: str, file_name: str) -> dict:
         """
-        Lấy nội dung file gốc đính kèm hồ sơ (PDF, ảnh...), dùng khi
-        người dùng muốn xem/tải/mở file đính kèm/tài liệu gốc. `key` và
-        `file_name` lấy từ project.fileUrls hoặc metadata trả về bởi
-        get_archive_detail. File nhỏ (<8MB) trả về base64 để hiển thị/
-        tải trực tiếp; file lớn hơn chỉ trả metadata (kích thước, loại
-        file) kèm cảnh báo, tránh làm phình phản hồi tool.
+        Lấy nội dung file gốc đính kèm hồ sơ (PDF, ảnh...). `key` lấy
+        từ URL trong project.fileUrls trả về bởi search_archives (URL
+        dạng .../files/proxy?key=...&fileName=...) — không cần gọi tool
+        nào khác trước đó để lấy key này.
         """
         client = get_archive_api_client()
         content, content_type = await client.get_file_proxy(key=key, file_name=file_name)

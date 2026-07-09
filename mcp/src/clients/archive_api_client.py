@@ -27,10 +27,10 @@ async def search_archives(
     size: int = 10,
 ):
     params = {k: v for k, v in locals().items() if v is not None}
-    return await _get("/api/public/archive", params)
+    return await _get("/api/public/archives", params)
 
 async def get_archive_detail(archive_id: str):
-    return await _get(f"/api/public/archive/{archive_id}")
+    return await _get(f"/api/public/archives/{archive_id}")
 
 async def get_staff_archive_metadata(only_metadata: bool = True):
     return await _get("/api/public/staff-archive", {"only_metadata": str(only_metadata).lower()})

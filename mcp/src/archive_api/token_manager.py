@@ -32,6 +32,9 @@ class SessionTokenManager:
         self._lock = asyncio.Lock()
 
     async def get_token(self, force_refresh: bool = False) -> str:
+        if not config_object.AUTH_ENABLED:
+            return ""  # API chưa yêu cầu token, tránh gọi endpoint chưa tồn tại
+
         if self._token and not force_refresh:
             return self._token
 

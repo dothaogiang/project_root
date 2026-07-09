@@ -36,13 +36,13 @@ class Config:
 
     # --- Public Archive API (live query, dùng bởi archive_api/client.py) ---
     ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.46:4000")
-    ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archive")
-    ARCHIVE_DETAIL_PATH = os.getenv("ARCHIVE_DETAIL_PATH", "/api/public/archive/{id}")
+    ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archives")
+    ARCHIVE_DETAIL_PATH = os.getenv("ARCHIVE_DETAIL_PATH", "/api/public/archives/{id}")
     STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
     FILE_PROXY_PATH = os.getenv("FILE_PROXY_PATH", "/api/public/files/proxy")
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 
-    # --- Chatbot session token (X-Chatbot-Token) ---
+    AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"
     CHATBOT_TOKEN_PATH = os.getenv("CHATBOT_TOKEN_PATH", "/api/v1/chatbot/session-token")
     CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID", "")
     CHATBOT_CLIENT_SECRET = os.getenv("CHATBOT_CLIENT_SECRET", "")

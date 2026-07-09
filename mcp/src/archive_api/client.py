@@ -37,35 +37,33 @@ class ArchiveApiClient:
     async def _request(self, method: str, path: str, params: Optional[dict] = None) -> httpx.Response:
         url = f"{self._base_url}{path}"
         token = await self._token_manager.get_token()
+        headers = {"X-Chatbot-Token": token} if token else {}
 
         async with httpx.AsyncClient() as client:
-            resp = await client.request(
-                method, url, params=params, headers={"X-Chatbot-Token": token}, timeout=self._timeout
-            )
+            resp = await client.request(method, url, params=params, headers=headers, timeout=self._timeout)
 
-            if resp.status_code == 401:
+            if resp.status_code == 401 and config_object.AUTH_ENABLED:
                 logger.warning(f"Token hết hạn/không hợp lệ khi gọi {url}, xin token mới rồi thử lại...")
                 token = await self._token_manager.get_token(force_refresh=True)
-                resp = await client.request(
-                    method, url, params=params, headers={"X-Chatbot-Token": token}, timeout=self._timeout
-                )
+                headers = {"X-Chatbot-Token": token} if token else {}
+                resp = await client.request(method, url, params=params, headers=headers, timeout=self._timeout)
 
             resp.raise_for_status()
             return resp
 
     async def search_archives(
-        self,
-        keyword: Optional[str] = None,
-        status: Optional[str] = None,
-        warehouse_id: Optional[str] = None,
-        language: Optional[str] = None,
-        maintenance: Optional[bool] = None,
-        created_from: Optional[str] = None,
-        created_to: Optional[str] = None,
-        updated_from: Optional[str] = None,
-        updated_to: Optional[str] = None,
-        page: int = 0,
-        size: int = 20,
+            self,
+            keyword: Optional[str] = None,
+            status: Optional[str] = None,
+            warehouse_id: Optional[str] = None,
+            language: Optional[str] = None,
+            maintenance: Optional[str] = None,
+            created_from: Optional[str] = None,
+            created_to: Optional[str] = None,
+            updated_from: Optional[str] = None,
+            updated_to: Optional[str] = None,
+            page: int = 0,
+            size: int = 20,
     ) -> dict[str, Any]:
         """
         Luôn trả về ĐÚNG 1 TRANG (mặc định page=0, size=20) — KHÔNG tự

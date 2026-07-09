@@ -2,29 +2,29 @@ tools:
   # ────────────────────────────────────────────────────────────────
   # TOOL 1: Tìm hồ sơ theo từ khóa tự do (tầng metadata - archive-level)
   # ────────────────────────────────────────────────────────────────
-  - category: mcp
-    name_tool: search_profile
-    description: >
-      Tìm kiếm hồ sơ/tài liệu lưu trữ (archive) theo từ khóa tự do:
-      tên người, chức vụ, ngày tháng, mã hồ sơ, nghề nghiệp, kho lưu
-      trữ... Hỗ trợ tìm kiếm ngữ nghĩa (semantic) kết hợp từ khóa
-      chính xác (hybrid search). Nếu từ khóa mơ hồ (VD: "làm nông"),
-      hệ thống sẽ tự động mở rộng ra các từ liên quan về nghĩa (nông
-      dân, nông nghiệp) và trả về nhiều hồ sơ liên quan. Nếu từ khóa
-      cụ thể (tên đầy đủ, mã hồ sơ, ngày sinh...), kết quả sẽ hẹp và
-      chính xác hơn. Dùng tool này để XÁC ĐỊNH hồ sơ nào liên quan
-      trước khi hỏi chi tiết bên trong hồ sơ đó bằng get_profile_detail.
-    inputSchema:
-      type: object
-      properties:
-        keyword:
-          type: string
-          description: "Từ khóa tìm kiếm tự do, có thể là tên, ngày sinh, nghề nghiệp, mã hồ sơ..."
-        top_k:
-          type: integer
-          description: "Số hồ sơ tối đa trả về trước khi lọc theo score-gap. Mặc định 10."
-      required:
-        - keyword
+#  - category: mcp
+#    name_tool: search_profile
+#    description: >
+#      Tìm kiếm hồ sơ/tài liệu lưu trữ (archive) theo từ khóa tự do:
+#      tên người, chức vụ, ngày tháng, mã hồ sơ, nghề nghiệp, kho lưu
+#      trữ... Hỗ trợ tìm kiếm ngữ nghĩa (semantic) kết hợp từ khóa
+#      chính xác (hybrid search). Nếu từ khóa mơ hồ (VD: "làm nông"),
+#      hệ thống sẽ tự động mở rộng ra các từ liên quan về nghĩa (nông
+#      dân, nông nghiệp) và trả về nhiều hồ sơ liên quan. Nếu từ khóa
+#      cụ thể (tên đầy đủ, mã hồ sơ, ngày sinh...), kết quả sẽ hẹp và
+#      chính xác hơn. Dùng tool này để XÁC ĐỊNH hồ sơ nào liên quan
+#      trước khi hỏi chi tiết bên trong hồ sơ đó bằng get_profile_detail.
+#    inputSchema:
+#      type: object
+#      properties:
+#        keyword:
+#          type: string
+#          description: "Từ khóa tìm kiếm tự do, có thể là tên, ngày sinh, nghề nghiệp, mã hồ sơ..."
+#        top_k:
+#          type: integer
+#          description: "Số hồ sơ tối đa trả về trước khi lọc theo score-gap. Mặc định 10."
+#      required:
+#        - keyword
 
   # ────────────────────────────────────────────────────────────────
   # TOOL 2: Trả lời câu hỏi chi tiết TRONG 1 hồ sơ cụ thể (tầng nội
@@ -65,21 +65,14 @@ tools:
   - category: mcp
     name_tool: search_archives
     description: >
-      Tìm kiếm danh sách hồ sơ lưu trữ TRỰC TIẾP trên hệ thống (không
-      qua semantic search), lọc theo field CHÍNH XÁC: status, kho lưu
-      trữ (warehouse_id), ngôn ngữ (language), tình trạng bảo trì
-      (maintenance), khoảng ngày tạo (created_from/created_to), khoảng
-      ngày cập nhật (updated_from/updated_to), hoặc từ khóa trong tiêu
-      đề/mã hồ sơ/mã hộp (keyword). Dùng khi người dùng hỏi: "tìm hồ
-      sơ", "tra cứu hồ sơ", "hồ sơ có tên...", "hồ sơ mã...", "hồ sơ
-      trong kho...", "hồ sơ tiếng Việt", "hồ sơ được tạo trong khoảng
-      ...". Nếu CHƯA biết archive_id của hồ sơ, LUÔN dùng tool này
-      trước tiên (kể cả trước khi gọi get_archive_detail hay
-      get_file_proxy). Mỗi lần gọi CHỈ trả về 1 trang (mặc định 20 hồ
-      sơ) — nếu không thấy hồ sơ phù hợp trong kết quả VÀ "last": false
-      (còn trang tiếp theo), hãy tự gọi lại tool này với page tăng
-      thêm 1 để tìm tiếp; nếu đã thấy hồ sơ cần tìm thì DỪNG LẠI, không
-      cần lấy hết các trang còn lại.
+      Tìm kiếm hồ sơ lưu trữ theo từ khóa/bộ lọc CHÍNH XÁC (status, kho,
+      ngôn ngữ, mã thời hạn bảo quản, khoảng ngày tạo/sửa). Đây là tool
+      DUY NHẤT để tìm hồ sơ — tool tự thử khớp chính xác trước, chỉ khi
+      không có kết quả nào mới tự mở rộng sang tìm kiếm theo nghĩa
+      (semantic) trên dữ liệu đã đánh index. Không cần gọi tool nào
+      khác để "tìm theo nghĩa" — cứ gọi tool này. Response có field
+      "search_mode": "keyword" hoặc "semantic_fallback" để biết kết quả
+      đến từ nguồn nào.
     inputSchema:
       type: object
       properties:
@@ -96,8 +89,8 @@ tools:
           type: string
           description: "Lọc theo ngôn ngữ hồ sơ (VD: vi, en)."
         maintenance:
-          type: boolean
-          description: "Lọc theo tình trạng đang bảo trì hay không."
+          type: string
+          description: "Mã thời hạn bảo quản (VD: '10 năm', '5 năm', 'Vĩnh viễn')."
         created_from:
           type: string
           description: "Lọc hồ sơ được tạo TỪ ngày này (ISO date, VD 2024-01-01)."
@@ -122,43 +115,43 @@ tools:
   # TOOL 4: Get Archive Detail — GET /api/public/archive/{id} (live,
   # chỉ dùng khi ĐÃ BIẾT archive_id)
   # ────────────────────────────────────────────────────────────────
-  - category: mcp
-    name_tool: get_archive_detail
-    description: >
-      Lấy TOÀN BỘ thông tin chi tiết của 1 hồ sơ theo UUID: metadata
-      đầy đủ, project liên quan, và borrowItems (lịch sử mượn hồ sơ).
-      CHỈ sử dụng tool này khi ĐÃ BIẾT archive_id (lấy được từ kết quả
-      của search_archives hoặc search_profile trước đó). Nếu chưa biết
-      archive_id, phải gọi search_archives trước để tìm ra nó.
-    inputSchema:
-      type: object
-      properties:
-        archive_id:
-          type: string
-          description: "UUID của hồ sơ cần lấy chi tiết."
-      required:
-        - archive_id
+#  - category: mcp
+#    name_tool: get_archive_detail
+#    description: >
+#      Lấy TOÀN BỘ thông tin chi tiết của 1 hồ sơ theo UUID: metadata
+#      đầy đủ, project liên quan, và borrowItems (lịch sử mượn hồ sơ).
+#      CHỈ sử dụng tool này khi ĐÃ BIẾT archive_id (lấy được từ kết quả
+#      của search_archives hoặc search_profile trước đó). Nếu chưa biết
+#      archive_id, phải gọi search_archives trước để tìm ra nó.
+#    inputSchema:
+#      type: object
+#      properties:
+#        archive_id:
+#          type: string
+#          description: "UUID của hồ sơ cần lấy chi tiết."
+#      required:
+#        - archive_id
 
   # ────────────────────────────────────────────────────────────────
   # TOOL 5: Staff Archive Metadata — GET /api/public/staff-archive
   # (schema/cấu trúc dữ liệu, KHÔNG phải tìm 1 hồ sơ cụ thể)
   # ────────────────────────────────────────────────────────────────
-  - category: mcp
-    name_tool: get_staff_archive_metadata
-    description: >
-      Lấy cấu trúc dữ liệu (schema) của hồ sơ cán bộ: danh sách các
-      trường metadata, và nếu only_metadata=false thì lấy thêm cả
-      documentTypes. Dùng khi người dùng hỏi: "hồ sơ cán bộ gồm những
-      trường nào", "metadata hồ sơ cán bộ", "cấu trúc hồ sơ cán bộ",
-      "document types". KHÔNG dùng tool này để tìm một hồ sơ cụ thể
-      (dùng search_archives cho việc đó).
-    inputSchema:
-      type: object
-      properties:
-        only_metadata:
-          type: boolean
-          description: "true: chỉ lấy metadata. false: lấy đầy đủ metadata và documentTypes. Mặc định true."
-      required: []
+#  - category: mcp
+#    name_tool: get_staff_archive_metadata
+#    description: >
+#      Lấy cấu trúc dữ liệu (schema) của hồ sơ cán bộ: danh sách các
+#      trường metadata, và nếu only_metadata=false thì lấy thêm cả
+#      documentTypes. Dùng khi người dùng hỏi: "hồ sơ cán bộ gồm những
+#      trường nào", "metadata hồ sơ cán bộ", "cấu trúc hồ sơ cán bộ",
+#      "document types". KHÔNG dùng tool này để tìm một hồ sơ cụ thể
+#      (dùng search_archives cho việc đó).
+#    inputSchema:
+#      type: object
+#      properties:
+#        only_metadata:
+#          type: boolean
+#          description: "true: chỉ lấy metadata. false: lấy đầy đủ metadata và documentTypes. Mặc định true."
+#      required: []
 
   # ────────────────────────────────────────────────────────────────
   # TOOL 6: File Proxy — GET /api/public/files/proxy (xem/tải file gốc)
@@ -166,13 +159,11 @@ tools:
   - category: mcp
     name_tool: get_file_proxy
     description: >
-      Lấy nội dung file gốc (PDF, ảnh...) đính kèm hồ sơ từ storage, để
-      xem/tải/mở file đính kèm hoặc xem tài liệu gốc. Dùng khi người
-      dùng muốn: "xem file", "tải file", "mở file đính kèm", "xem tài
-      liệu gốc". `key` và `file_name` lấy từ fileUrls/metadata trong
-      kết quả của get_archive_detail — vì vậy thường phải gọi
-      search_archives -> get_archive_detail trước để có đủ 2 giá trị
-      này, rồi mới gọi tool này.
+      Lấy nội dung file gốc (PDF, ảnh...). Tham số `key` PHẢI lấy từ
+      field "fileKeys" trong kết quả search_archives (KHÔNG phải
+      archive_id, KHÔNG phải arcFileCode). Nếu hồ sơ có
+      "hasFiles": false (hoặc "projects": [] rỗng) thì hồ sơ đó
+      KHÔNG có file nào để lấy, đừng gọi tool này.
     inputSchema:
       type: object
       properties:
@@ -184,4 +175,4 @@ tools:
           description: "Tên file gốc, lấy từ get_archive_detail."
       required:
         - key
-        - file_name
+#        - file_name

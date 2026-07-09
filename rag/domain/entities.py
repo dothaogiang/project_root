@@ -17,14 +17,21 @@ class ArchiveRecord:
     id: str
     title: str
     arc_file_code: Optional[str] = None
-    box_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    shelf_level_code: Optional[str] = None
     warehouse_name: Optional[str] = None
+    room_number: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     status: Optional[str] = None
+    description: Optional[str] = None
+    total_doc: Optional[int] = None
+    language: Optional[str] = None
+    maintenance: Optional[str] = None
     updated_at: Optional[str] = None
     staff_metadata: list = field(default_factory=list)
     projects: list = field(default_factory=list)  # mỗi project có "name" + "fileUrls"
+    borrow_items: list = field(default_factory=list)
 
     def file_urls(self) -> list[tuple[str, str]]:
         """Trả về list (project_name, file_url) để duyệt qua từng file PDF."""
@@ -83,11 +90,12 @@ class RetrievedProfile:
     """1 hồ sơ trả về sau khi hybrid search ở tầng metadata (archive-level)."""
 
     archive_id: str
-    title: Optional[str]
-    arc_file_code: Optional[str]
-    box_code: Optional[str]
-    warehouse_name: Optional[str]
-    start_date: Optional[str]
-    end_date: Optional[str]
-    staff_metadata: list
     score: float
+    title: Optional[str] = None
+    arc_file_code: Optional[str] = None
+    shelf_code: Optional[str] = None
+    shelf_level_code: Optional[str] = None
+    warehouse_name: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    staff_metadata: list = field(default_factory=list)
