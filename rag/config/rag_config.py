@@ -64,6 +64,7 @@ class RagConfig:
 
     # --- Sync state (SQLite, để cron chạy incremental) ---
     SYNC_DB_PATH = os.getenv("SYNC_DB_PATH", os.path.join(BASE_DIR, "sync_state.db"))
+    MD_FILE_URL_FIELD = os.getenv("MD_FILE_URL_FIELD", "mdFileUrls")
 
 
 rag_config = RagConfig()

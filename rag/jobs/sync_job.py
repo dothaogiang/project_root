@@ -28,6 +28,7 @@ from rag.application.ingestion_service import IngestionService
 from rag.config.rag_config import rag_config
 from rag.infrastructure.archive_api_client import HttpArchiveApiClient
 from rag.infrastructure.embedding_provider import FastEmbedProvider
+from rag.infrastructure.md_extractor import MdExtractor
 from rag.infrastructure.pdf_extractor import PyMuPdfExtractor
 from rag.infrastructure.sync_state_repo import SqliteSyncStateRepo
 from rag.infrastructure.vector_store import QdrantVectorStore
@@ -41,6 +42,7 @@ async def main():
         service = IngestionService(
             archive_api=archive_api,
             pdf_extractor=PyMuPdfExtractor(),
+            md_extractor=MdExtractor(),
             embedder=FastEmbedProvider(),
             vector_store=QdrantVectorStore(),
             sync_state=SqliteSyncStateRepo(),

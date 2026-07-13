@@ -39,7 +39,6 @@ class Config:
     ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archives")
     ARCHIVE_DETAIL_PATH = os.getenv("ARCHIVE_DETAIL_PATH", "/api/public/archives/{id}")
     STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
-    FILE_PROXY_PATH = os.getenv("FILE_PROXY_PATH", "/api/public/files/proxy")
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 
     AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"

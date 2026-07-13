@@ -14,6 +14,7 @@ from typing import TypeVar
 
 from rag.domain.entities import RetrievedChunk, RetrievedProfile
 from rag.ports.interfaces import EmbeddingProviderPort, VectorStorePort
+from rag.infrastructure.text_normalize import strip_diacritics
 
 _Scored = TypeVar("_Scored", RetrievedProfile, RetrievedChunk)
 
@@ -40,14 +41,9 @@ class RetrievalService:
         self._vector_store = vector_store
 
     def search_profiles(
-        self, keyword: str, top_k: int = 10, score_gap_ratio: float = _DEFAULT_SCORE_GAP_RATIO
+            self, keyword: str, top_k: int = 10, score_gap_ratio: float = _DEFAULT_SCORE_GAP_RATIO
     ) -> list[RetrievedProfile]:
-        """Tìm hồ sơ (archive) theo từ khóa tự do — tầng 'định danh hồ sơ'.
-
-        score_gap_ratio: chỉ giữ lại kết quả có điểm >= score_gap_ratio *
-        điểm cao nhất. Đặt 0 để tắt lọc (trả nguyên top_k như Qdrant trả về).
-        """
-        query_embedding = self._embedder.embed_text(keyword)
+        query_embedding = self._embedder.embed_text(strip_diacritics(keyword))
         results = self._vector_store.search_profiles(query_embedding, top_k)
         return _filter_by_score_gap(results, score_gap_ratio)
 

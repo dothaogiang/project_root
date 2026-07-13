@@ -96,17 +96,6 @@ class ArchiveApiClient:
         resp = await self._request("GET", path)
         return resp.json()
 
-    async def get_staff_archive_metadata(self, only_metadata: bool = True) -> dict[str, Any]:
-        params = {"only_metadata": str(only_metadata).lower()}
-        resp = await self._request("GET", config_object.STAFF_ARCHIVE_PATH, params=params)
-        return resp.json()
-
-    async def get_file_proxy(self, key: str, file_name: str) -> tuple[bytes, str]:
-        params = {"key": key, "fileName": file_name}
-        resp = await self._request("GET", config_object.FILE_PROXY_PATH, params=params)
-        content_type = resp.headers.get("Content-Type", "application/octet-stream")
-        return resp.content, content_type
-
 
 _client: Optional[ArchiveApiClient] = None
 

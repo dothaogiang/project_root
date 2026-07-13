@@ -33,12 +33,18 @@ class ArchiveRecord:
     projects: list = field(default_factory=list)  # mỗi project có "name" + "fileUrls"
     borrow_items: list = field(default_factory=list)
 
-    def file_urls(self) -> list[tuple[str, str]]:
-        """Trả về list (project_name, file_url) để duyệt qua từng file PDF."""
+    def md_file_urls(self) -> list[tuple[str, str]]:
+        """
+        Trả về list (project_name, md_url) từ field cấu hình trong
+        MD_FILE_URL_FIELD. Rỗng nếu backend chưa trả field này (API
+        MD chưa tồn tại) — ingestion sẽ tự fallback sang PDF khi rỗng.
+        """
+        from rag.config.rag_config import rag_config
+        field_name = rag_config.MD_FILE_URL_FIELD
         pairs = []
         for project in self.projects or []:
             name = project.get("name", "")
-            for url in project.get("fileUrls") or []:
+            for url in project.get(field_name) or []:
                 pairs.append((name, url))
         return pairs
 

@@ -12,6 +12,7 @@ mạng thật.
 import asyncio
 import hashlib
 
+
 from rag.domain.entities import ArchiveRecord
 from rag.ports.interfaces import (
     ArchiveApiClientPort,
@@ -21,12 +22,12 @@ from rag.ports.interfaces import (
     VectorStorePort,
 )
 from rag.logger import get_logger
+from rag.infrastructure.text_normalize import strip_diacritics
 
 logger = get_logger(__name__)
 
 
 def _build_archive_search_text(archive: ArchiveRecord) -> str:
-    """Gộp field metadata thành 1 đoạn text tự nhiên để embed cho search_profile."""
     staff_lines = "; ".join(
         f"{m.get('fieldName', '')}: {m.get('value', '')}" for m in archive.staff_metadata
     )
@@ -34,12 +35,12 @@ def _build_archive_search_text(archive: ArchiveRecord) -> str:
     parts = [
         f"Tiêu đề: {archive.title}",
         f"Mã hồ sơ: {archive.arc_file_code}",
-        f"Kho: {archive.warehouse_name}",
         f"Thời gian: {archive.start_date} - {archive.end_date}",
         f"Thông tin cán bộ: {staff_lines}" if staff_lines else "",
         f"Tài liệu: {project_names}" if project_names else "",
     ]
-    return ". ".join(p for p in parts if p)
+    text = ". ".join(p for p in parts if p)
+    return strip_diacritics(text)
 
 
 class IngestionService:
@@ -47,6 +48,7 @@ class IngestionService:
         self,
         archive_api: ArchiveApiClientPort,
         pdf_extractor: PdfExtractorPort,
+        md_extractor: PdfExtractorPort,
         embedder: EmbeddingProviderPort,
         vector_store: VectorStorePort,
         sync_state: SyncStateRepoPort,
@@ -55,6 +57,7 @@ class IngestionService:
     ):
         self._archive_api = archive_api
         self._pdf_extractor = pdf_extractor
+        self._md_extractor = md_extractor
         self._embedder = embedder
         self._vector_store = vector_store
         self._sync_state = sync_state
@@ -95,8 +98,15 @@ class IngestionService:
 
         await self._sync_archive_metadata(archive)
 
-        for project_name, file_url in archive.file_urls():
-            await self._sync_file(archive, project_name, file_url)
+        md_urls = archive.md_file_urls()
+        if md_urls:
+            logger.info(f"Archive {archive.id}: dùng nguồn MD ({len(md_urls)} file)")
+            for project_name, file_url in md_urls:
+                await self._sync_file(archive, project_name, file_url, self._md_extractor)
+        else:
+            logger.info(f"Archive {archive.id}: chưa có MD, fallback PDF+OCR")
+            for project_name, file_url in archive.file_urls():
+                await self._sync_file(archive, project_name, file_url, self._pdf_extractor)
 
         self._sync_state.set_archive_synced(archive.id, archive.updated_at)
 
@@ -105,22 +115,24 @@ class IngestionService:
         embedding = self._embedder.embed_text(search_text)
         self._vector_store.upsert_archive(archive, embedding)
 
-    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str) -> None:
+    async def _sync_file(
+        self, archive: ArchiveRecord, project_name: str, file_url: str, extractor: PdfExtractorPort
+    ) -> None:
         async with self._ocr_semaphore:
             try:
-                pdf_bytes = await self._archive_api.download_file(file_url)
+                file_bytes = await self._archive_api.download_file(file_url)
             except Exception as e:
                 logger.error(f"Không tải được file {file_url}: {e}")
                 return
 
-            content_hash = hashlib.md5(pdf_bytes).hexdigest()
+            content_hash = hashlib.md5(file_bytes).hexdigest()
             old_hash = self._sync_state.get_file_hash(archive.id, file_url)
             if old_hash == content_hash:
                 logger.info(f"File không đổi, bỏ qua: {file_url}")
                 return
 
             logger.info(f"Đang extract: {file_url}")
-            chunks = self._pdf_extractor.extract_and_chunk(archive.id, file_url, project_name, pdf_bytes)
+            chunks = extractor.extract_and_chunk(archive.id, file_url, project_name, file_bytes)
 
             if not chunks:
                 logger.warning(f"Không trích được text từ: {file_url}")
@@ -128,8 +140,6 @@ class IngestionService:
                 return
 
             embeddings = self._embedder.embed_batch([c.text for c in chunks])
-
-            # Xóa chunk cũ trước khi upsert mới, tránh chunk rác nếu file rút gọn nội dung
             self._vector_store.delete_chunks_by_file(archive.id, file_url)
             self._vector_store.upsert_chunks(chunks, embeddings)
 

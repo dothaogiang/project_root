@@ -75,11 +75,16 @@ class QdrantVectorStore(VectorStorePort):
             "archive_id": archive.id,
             "title": archive.title,
             "arcFileCode": archive.arc_file_code,
-            "boxCode": archive.box_code,
+            "shelfCode": archive.shelf_code,
+            "shelfLevelCode": archive.shelf_level_code,
             "warehouseName": archive.warehouse_name,
+            "roomNumber": archive.room_number,
             "startDate": archive.start_date,
             "endDate": archive.end_date,
             "status": archive.status,
+            "description": archive.description,
+            "language": archive.language,
+            "maintenance": archive.maintenance,
             "staffMetadata": archive.staff_metadata,
         }
         client.upsert(
@@ -157,18 +162,18 @@ class QdrantVectorStore(VectorStorePort):
         return [
             RetrievedProfile(
                 archive_id=p.payload.get("archive_id"),
+                score=round(p.score, 4),
                 title=p.payload.get("title"),
                 arc_file_code=p.payload.get("arcFileCode"),
-                box_code=p.payload.get("boxCode"),
+                shelf_code=p.payload.get("shelfCode"),
+                shelf_level_code=p.payload.get("shelfLevelCode"),
                 warehouse_name=p.payload.get("warehouseName"),
                 start_date=p.payload.get("startDate"),
                 end_date=p.payload.get("endDate"),
                 staff_metadata=p.payload.get("staffMetadata") or [],
-                score=round(p.score, 4),
             )
             for p in points
         ]
-
     def search_chunks(self, query_embedding: Embedding, archive_id: str, top_k: int) -> list[RetrievedChunk]:
         archive_filter = models.Filter(
             must=[models.FieldCondition(key="archive_id", match=models.MatchValue(value=archive_id))]
