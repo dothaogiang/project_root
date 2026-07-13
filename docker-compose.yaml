@@ -21,14 +21,14 @@ services:
     env_file: .env
     environment:
       QDRANT_URL: http://qdrant:6333
-      SYNC_DB_PATH: /app/data/sync_state.db
-    volumes:
-      - ./data:/app/data
     command: python mcp/src/server.py
 
-  # Folder rag/ — chạy độc lập, chỉ lo đồng bộ dữ liệu vào Qdrant,
-  # không liên quan gì tới MCP protocol
-  sync_cron:
+  # Folder rag/ — chạy độc lập, đồng bộ dữ liệu vào Qdrant MỘT LẦN DUY
+  # NHẤT rồi thoát (không lặp lại theo giờ nữa). Chạy bằng:
+  #   docker compose run --rm sync_job
+  # (không nên "docker compose up" service này như một service thường
+  # trực, vì nó không phải long-running process)
+  sync_job:
     build:
       context: .
       dockerfile: Dockerfile
@@ -37,11 +37,7 @@ services:
     env_file: .env
     environment:
       QDRANT_URL: http://qdrant:6333
-      SYNC_DB_PATH: /app/data/sync_state.db
-    volumes:
-      - ./data:/app/data
-    entrypoint: >
-      sh -c "while true; do python -m rag.jobs.sync_job; echo 'Chờ 3600s...'; sleep 3600; done"
+    command: python -m rag.jobs.sync_job
 
 volumes:
-  qdrant_data:
+  qdrant_data:  

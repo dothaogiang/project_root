@@ -5,12 +5,6 @@
 # dependency của cả 2 folder.
 FROM python:3.11-slim
 
-# pytesseract (OCR) cần binary tesseract-ocr + gói ngôn ngữ tiếng Việt
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
-    tesseract-ocr-vie \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Cài dependency của cả 2 folder vào chung 1 venv hệ thống

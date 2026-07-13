@@ -12,7 +12,6 @@ embedding API...) chỉ cần viết class mới implement lại đúng các met
 dưới đây trong infrastructure/, KHÔNG cần sửa application/.
 """
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from rag.domain.entities import (
     ArchiveRecord,
@@ -32,15 +31,15 @@ class ArchiveApiClientPort(ABC):
 
     @abstractmethod
     async def download_file(self, file_url: str) -> bytes:
-        """Tải nội dung file PDF (bytes thô)."""
+        """Tải nội dung file MD (bytes thô)."""
 
 
-class PdfExtractorPort(ABC):
-    """Trích xuất text từ PDF (native hoặc OCR) + chia chunk."""
+class FileExtractorPort(ABC):
+    """Trích xuất text từ file nguồn (hiện là Markdown) + chia chunk."""
 
     @abstractmethod
     def extract_and_chunk(
-        self, archive_id: str, file_url: str, project_name: str, pdf_bytes: bytes
+        self, archive_id: str, file_url: str, project_name: str, file_bytes: bytes
     ) -> list[DocumentChunk]:
         """Trả về danh sách DocumentChunk sẵn sàng để embed."""
 
@@ -79,30 +78,3 @@ class VectorStorePort(ABC):
     def search_chunks(
         self, query_embedding: Embedding, archive_id: str, top_k: int
     ) -> list[RetrievedChunk]: ...
-
-
-class SyncStateRepoPort(ABC):
-    """Trạng thái đồng bộ (checkpoint, hash file) để hỗ trợ incremental sync."""
-
-    @abstractmethod
-    def get_archive_last_updated(self, archive_id: str) -> Optional[str]: ...
-
-    @abstractmethod
-    def set_archive_synced(self, archive_id: str, updated_at: str) -> None: ...
-
-    @abstractmethod
-    def get_file_hash(self, archive_id: str, file_url: str) -> Optional[str]: ...
-
-    @abstractmethod
-    def set_file_synced(
-        self, archive_id: str, file_url: str, content_hash: str, method: str, chunk_count: int
-    ) -> None: ...
-
-    @abstractmethod
-    def get_checkpoint_page(self) -> int: ...
-
-    @abstractmethod
-    def set_checkpoint_page(self, page: int) -> None: ...
-
-    @abstractmethod
-    def reset_checkpoint(self) -> None: ...

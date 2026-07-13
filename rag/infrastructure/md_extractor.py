@@ -1,6 +1,6 @@
 from rag.config.rag_config import rag_config
 from rag.domain.entities import DocumentChunk
-from rag.ports.interfaces import PdfExtractorPort
+from rag.ports.interfaces import FileExtractorPort
 from rag.logger import get_logger
 
 logger = get_logger(__name__)
@@ -8,7 +8,7 @@ logger = get_logger(__name__)
 EXTRACTION_MD = "md"
 
 
-class MdExtractor(PdfExtractorPort):
+class MdExtractor(FileExtractorPort):
     def extract_and_chunk(
         self, archive_id: str, file_url: str, project_name: str, md_bytes: bytes
     ) -> list[DocumentChunk]:

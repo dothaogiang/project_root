@@ -48,15 +48,6 @@ class RagConfig:
     SPARSE_MODEL_NAME = os.getenv("SPARSE_MODEL_NAME", "Qdrant/bm25")
     DENSE_VECTOR_SIZE = int(os.getenv("DENSE_VECTOR_SIZE", "1024"))  # bge-m3 output dim
 
-    # --- OCR ---
-    OCR_LANG = os.getenv("OCR_LANG", "vie")
-    OCR_MIN_CHARS_PER_PAGE = int(os.getenv("OCR_MIN_CHARS_PER_PAGE", "50"))
-    OCR_DPI = int(os.getenv("OCR_DPI", "200"))
-    OCR_CONCURRENCY = int(os.getenv("OCR_CONCURRENCY", "4"))
-    # Đường dẫn tới binary tesseract.exe — chỉ cần set nếu KHÔNG có tesseract
-    # trong PATH hệ thống (thường gặp trên Windows nếu bỏ qua bước add PATH
-    # lúc cài đặt). Để trống nếu tesseract đã chạy được từ terminal.
-    TESSERACT_CMD = os.getenv("TESSERACT_CMD", "")
 
     # --- Chunking ---
     CHUNK_SIZE_CHARS = int(os.getenv("CHUNK_SIZE_CHARS", "1200"))

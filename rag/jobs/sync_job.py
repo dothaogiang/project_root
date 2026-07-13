@@ -3,16 +3,16 @@ jobs/sync_job.py — Entry point chạy đồng bộ dữ liệu (composition ro
 của module rag/).
 
 Đây là nơi DUY NHẤT "lắp ráp" (wire) các adapter cụ thể
-(HttpArchiveApiClient, PyMuPdfExtractor, FastEmbedProvider,
-QdrantVectorStore, SqliteSyncStateRepo) vào IngestionService thông qua
-constructor injection. application/ingestion_service.py không hề biết
-đến các class cụ thể này.
+(HttpArchiveApiClient, MdExtractor, FastEmbedProvider, QdrantVectorStore)
+vào IngestionService thông qua constructor injection.
+application/ingestion_service.py không hề biết đến các class cụ thể này.
+
+Job này chạy MỘT LẦN DUY NHẤT, đẩy toàn bộ dữ liệu (metadata + nội dung
+file MD) vào Qdrant. Không có cron/scheduler, không có checkpoint/resume
+— chạy xong là kết thúc tiến trình.
 
 Chạy thủ công:
     python -m rag.jobs.sync_job
-Chạy định kỳ: đặt trong crontab / APScheduler / k8s CronJob / Docker
-Compose service `sync_cron` (mỗi giờ là hợp lý cho archive/document ít
-thay đổi trong ngày).
 """
 import asyncio
 import sys
@@ -29,8 +29,6 @@ from rag.config.rag_config import rag_config
 from rag.infrastructure.archive_api_client import HttpArchiveApiClient
 from rag.infrastructure.embedding_provider import FastEmbedProvider
 from rag.infrastructure.md_extractor import MdExtractor
-from rag.infrastructure.pdf_extractor import PyMuPdfExtractor
-from rag.infrastructure.sync_state_repo import SqliteSyncStateRepo
 from rag.infrastructure.vector_store import QdrantVectorStore
 from rag.logger import get_logger
 
@@ -41,15 +39,12 @@ async def main():
     async with HttpArchiveApiClient() as archive_api:
         service = IngestionService(
             archive_api=archive_api,
-            pdf_extractor=PyMuPdfExtractor(),
             md_extractor=MdExtractor(),
             embedder=FastEmbedProvider(),
             vector_store=QdrantVectorStore(),
-            sync_state=SqliteSyncStateRepo(),
             page_size=rag_config.ARCHIVE_API_PAGE_SIZE,
-            ocr_concurrency=rag_config.OCR_CONCURRENCY,
         )
-        await service.run(resume=True)
+        await service.run()
 
 
 if __name__ == "__main__":

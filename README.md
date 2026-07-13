@@ -3,11 +3,13 @@
 Hệ thống tra cứu hồ sơ lưu trữ (archive) qua chatbot, dùng chuẩn **MCP
 (Model Context Protocol)** để expose 2 tool cho LLM/chatbot gọi:
 `search_profile` (tìm hồ sơ theo từ khóa) và `get_profile_detail` (hỏi
-sâu nội dung PDF bên trong 1 hồ sơ cụ thể).
+sâu nội dung file Markdown bên trong 1 hồ sơ cụ thể).
 
-Dữ liệu hồ sơ (metadata + file PDF) được lấy về từ Public Archive API
-nội bộ, OCR/trích xuất text, embed rồi lưu vào Qdrant để phục vụ tìm
-kiếm ngữ nghĩa (semantic) kết hợp từ khóa (hybrid search).
+Dữ liệu hồ sơ (metadata + file MD) được lấy về từ Public Archive API
+nội bộ, trích xuất text, embed rồi lưu vào Qdrant để phục vụ tìm kiếm
+ngữ nghĩa (semantic) kết hợp từ khóa (hybrid search). Việc nhúng dữ
+liệu vào Qdrant là **một tác vụ chạy 1 lần** (one-off), không có
+cron/lịch chạy tự động.
 
 ## Dự án làm gì
 
@@ -17,7 +19,7 @@ Hệ thống expose **6 tool MCP**, chia làm 2 nhóm khác bản chất:
 `rag/`):
 
 - `search_profile` — tìm hồ sơ bằng hybrid search (semantic + từ khóa)
-- `get_profile_detail` — hỏi sâu nội dung PDF (đã OCR) bên trong 1 hồ sơ
+- `get_profile_detail` — hỏi sâu nội dung file MD bên trong 1 hồ sơ
 
 **Nhóm B — Live query trực tiếp vào Public Archive API** (không qua
 Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
@@ -25,12 +27,12 @@ Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
 - `search_archives` — tìm hồ sơ theo field lọc chính xác (status, kho, ngôn ngữ, khoảng ngày...)
 - `get_archive_detail` — lấy toàn bộ chi tiết 1 hồ sơ theo UUID (metadata, project, lịch sử mượn)
 - `get_staff_archive_metadata` — lấy cấu trúc/schema của hồ sơ cán bộ
-- `get_file_proxy` — lấy nội dung file gốc (PDF, ảnh...) đính kèm hồ sơ
+- `get_file_proxy` — lấy nội dung file gốc (MD, ảnh...) đính kèm hồ sơ
 
 Quy tắc chọn tool cho chatbot: chưa biết `archive_id` → luôn
 `search_archives` (hoặc `search_profile` nếu muốn semantic) trước; đã
 biết `archive_id` mà cần chi tiết đầy đủ (kể cả lịch sử mượn) →
-`get_archive_detail`; cần hỏi sâu nội dung PDF → `get_profile_detail`;
+`get_archive_detail`; cần hỏi sâu nội dung file MD → `get_profile_detail`;
 cần schema hồ sơ cán bộ → `get_staff_archive_metadata`; cần xem/tải
 file → `get_file_proxy`.
 
@@ -59,27 +61,26 @@ project_root/
 │   ├── domain/entities.py        # Model dữ liệu thuần (ArchiveRecord, DocumentChunk...)
 │   ├── ports/interfaces.py       # Interface — application phụ thuộc vào đây, không phụ thuộc infra cụ thể
 │   ├── application/
-│   │   ├── ingestion_service.py  # Use case: API -> extract/OCR -> chunk -> embed -> Qdrant
+│   │   ├── ingestion_service.py  # Use case: API -> extract MD -> chunk -> embed -> Qdrant (chạy 1 lần)
 │   │   └── retrieval_service.py  # Use case: search_profiles / search_chunks_in_archive (+ lọc score-gap)
 │   ├── infrastructure/
 │   │   ├── archive_api_client.py # Gọi Public Archive API thật (httpx)
-│   │   ├── pdf_extractor.py      # PyMuPDF + pytesseract (native/OCR + chunk)
+│   │   ├── md_extractor.py       # Trích text từ file Markdown + chunk
 │   │   ├── embedding_provider.py # fastembed (dense multilingual-e5-large + sparse bm25)
-│   │   ├── vector_store.py       # Qdrant (2 collection: archives, document_chunks)
-│   │   └── sync_state_repo.py    # SQLite checkpoint (incremental sync)
+│   │   └── vector_store.py       # Qdrant (2 collection: archives, document_chunks)
 │   ├── config/rag_config.py      # Cấu hình riêng của rag/ (đọc từ .env)
-│   ├── jobs/sync_job.py          # Entry point chạy đồng bộ: python -m rag.jobs.sync_job
+│   ├── jobs/sync_job.py          # Entry point chạy đồng bộ 1 lần: python -m rag.jobs.sync_job
 │   ├── logger.py                 # Logger riêng, rag/ không phụ thuộc mcp/
 │   ├── retrieval_factory.py      # Nơi mcp/ (hoặc chatbot khác) gọi vào để lấy RetrievalService
 │   └── requirements.txt          # Dependency riêng của rag/
 │
 ├── Dockerfile                    # Build 1 image chứa cả 2 folder (mcp_server chạy chung tiến trình, import rag trực tiếp)
-├── docker-compose.yaml           # 3 service: qdrant, mcp_server, sync_cron
+├── docker-compose.yaml           # 3 service: qdrant, mcp_server, sync_job (one-off)
 ├── .env.example                  # Copy thành .env rồi điền giá trị thật
 └── .gitignore
 ```
 
-**Vì sao tách 2 folder độc lập:** `mcp/` không biết gì về Qdrant/OCR/
+**Vì sao tách 2 folder độc lập:** `mcp/` không biết gì về Qdrant/
 embedding — nó chỉ biết gọi vào `rag.retrieval_factory.get_retrieval_service()`.
 `rag/` không biết gì về MCP/tools.yaml — nó chỉ lo ingest và trả dữ
 liệu. Nhờ vậy có thể đổi hạ tầng (Qdrant → DB khác, model embedding
@@ -94,27 +95,32 @@ cd project_root
 cp .env.example .env
 # mở .env, sửa ARCHIVE_API_BASE_URL cho đúng địa chỉ Public Archive API thật
 
-docker-compose up --build
+docker-compose up --build -d qdrant mcp_server
 ```
 
-Lệnh này khởi động 3 service:
+Lệnh trên khởi động 2 service chạy nền:
 
-| Service      | Vai trò                                                              |
-| ------------ | -------------------------------------------------------------------- |
-| `qdrant`     | Vector DB, port `6333`                                               |
-| `mcp_server` | Server MCP, port `8090`, chạy `python mcp/src/server.py`             |
-| `sync_cron`  | Vòng lặp đồng bộ dữ liệu mỗi giờ, chạy `python -m rag.jobs.sync_job` |
+| Service      | Vai trò                                                  |
+| ------------ | --------------------------------------------------------- |
+| `qdrant`     | Vector DB, port `6333`                                    |
+| `mcp_server` | Server MCP, port `8090`, chạy `python mcp/src/server.py`  |
 
-Ingest dữ liệu ngay lần đầu (không cần đợi cron chạy theo giờ):
+`sync_job` **không** phải service chạy nền — đây là job one-off, chạy
+đúng 1 lần để nhúng toàn bộ dữ liệu vào Qdrant:
 
 ```bash
-docker-compose run --rm sync_cron python -m rag.jobs.sync_job
+docker-compose run --rm sync_job
 ```
+
+Chạy lệnh này trước khi (hoặc sau khi) `mcp_server` lên đều được — chỉ
+cần chạy xong trước khi chatbot thực sự cần tra cứu dữ liệu. Muốn nhúng
+lại dữ liệu (ví dụ nguồn có thay đổi), chạy lại đúng lệnh trên; dữ liệu
+cũ trong Qdrant sẽ được ghi đè theo `archive_id`/`file_url`, không tạo
+bản trùng.
 
 Theo dõi log:
 
 ```bash
-docker-compose logs -f sync_cron
 docker-compose logs -f mcp_server
 ```
 
@@ -146,7 +152,7 @@ cp .env.example .env
 docker run -p 6333:6333 qdrant/qdrant:latest
 ```
 
-**2. Ingest dữ liệu** (chạy 1 lần để có dữ liệu test, log sẽ hiện tiến độ từng archive/file):
+**2. Nhúng dữ liệu vào Qdrant** (chạy 1 lần, log sẽ hiện tiến độ từng archive/file):
 
 ```bash
 python -m rag.jobs.sync_job
@@ -189,13 +195,13 @@ với `transport="streamable-http"`).
 | `pip` báo dependency conflict (obspy, torchvision...)                    | Đang cài vào env chung với project khác                  | Tạo venv mới sạch, không dùng chung env                                                                 |
 | `httpx.ConnectError: All connection attempts failed` khi chạy `sync_job` | Không kết nối được `ARCHIVE_API_BASE_URL` (sai mạng/VPN) | `Invoke-WebRequest` thử gọi thẳng URL đó                                                                |
 | `Model ... is not supported in TextEmbedding`                            | Bản `fastembed` đang cài không có model đó               | `TextEmbedding.list_supported_models()` để xem model nào khả dụng, đổi `DENSE_MODEL_NAME` trong `.env`  |
-| `tesseract is not installed or it's not in your PATH`                    | Máy chưa cài Tesseract OCR (chỉ cần khi PDF là bản scan) | Cài Tesseract (+ gói ngôn ngữ `vie`) và thêm vào PATH, hoặc dùng Docker (đã cài sẵn trong `Dockerfile`) |
 | `search_profile` trả về quá nhiều hồ sơ không liên quan                  | Bản chất vector search luôn trả top-K dù không liên quan | Đã có lọc score-gap trong `retrieval_service.py`; điều chỉnh `score_gap_ratio` nếu cần lọc gắt/lỏng hơn |
 | `ModuleNotFoundError: rag` khi chạy `mcp/src/server.py`                  | `sys.path` chưa trỏ đúng tới `project_root`              | Kiểm tra `PROJECT_ROOT = Path(__file__).resolve().parents[2]` trong `server.py`                         |
+| `search_profile`/`get_profile_detail` không tìm thấy dữ liệu gì          | Chưa chạy `sync_job` lần nào, Qdrant đang trống           | Chạy `python -m rag.jobs.sync_job` (hoặc `docker-compose run --rm sync_job`) rồi thử lại                |
 
 ## Biến môi trường (`.env`)
 
 Xem đầy đủ trong `.env.example` — dùng chung 1 file `.env` ở project
 root cho cả `mcp/` (`SERVER_NAME`, `PORT_SERVER`...) và `rag/`
-(`ARCHIVE_API_BASE_URL`, `QDRANT_URL`, `DENSE_MODEL_NAME`, `OCR_*`,
+(`ARCHIVE_API_BASE_URL`, `QDRANT_URL`, `DENSE_MODEL_NAME`,
 `CHUNK_*`...).
