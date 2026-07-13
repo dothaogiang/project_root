@@ -82,13 +82,21 @@ class Embedding:
 
 @dataclass
 class RetrievedChunk:
-    """1 chunk trả về sau khi hybrid search, kèm điểm relevance."""
+    """1 chunk trả về sau khi hybrid search, kèm điểm relevance.
+
+    archive_id/project_name: LUÔN có giá trị (lấy từ payload đã lưu khi
+    ingest) — quan trọng khi search KHÔNG giới hạn theo 1 archive_id cụ
+    thể (search_chunks_all), vì đó là cách duy nhất biết chunk trả về
+    thuộc hồ sơ nào.
+    """
 
     text: str
     file_url: str
     page_number: int
     extraction_method: str
     score: float
+    archive_id: Optional[str] = None
+    project_name: Optional[str] = None
 
 
 @dataclass

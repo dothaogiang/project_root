@@ -1,5 +1,120 @@
 tools:
   # ────────────────────────────────────────────────────────────────
+  # TOOL 1: Search Profile — semantic search theo từ khóa tự do trên
+  # METADATA hồ sơ (title, arcFileCode, staffMetadata...) đã ingest sẵn
+  # vào Qdrant. Trả về archive_id để gọi tiếp get_profile_detail /
+  # find_profile_and_answer nếu cần hỏi sâu vào nội dung.
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: search_profile
+    description: >
+      Tìm hồ sơ (archive) theo từ khóa tự do bằng semantic search (hiểu
+      theo nghĩa, không cần khớp chính xác chữ) trên metadata đã đánh
+      index sẵn (tiêu đề, mã hồ sơ, thông tin cán bộ...). Dùng khi cần
+      LIỆT KÊ các hồ sơ khớp với 1 từ khóa/chủ đề, KHÔNG dùng để trả
+      lời câu hỏi về nội dung chi tiết bên trong 1 hồ sơ cụ thể (dùng
+      get_profile_detail hoặc find_profile_and_answer cho việc đó).
+    inputSchema:
+      type: object
+      properties:
+        keyword:
+          type: string
+          description: "Từ khóa/chủ đề cần tìm, VD tên người, đơn vị công tác, chuyên ngành..."
+        top_k:
+          type: integer
+          description: "Số hồ sơ tối đa trả về. Mặc định và tối đa là 5."
+      required: ["keyword"]
+
+  # ────────────────────────────────────────────────────────────────
+  # TOOL 2: Get Profile Detail — trả lời câu hỏi TRONG PHẠM VI 1 hồ sơ
+  # ĐÃ BIẾT archive_id (thường lấy từ kết quả search_profile hoặc
+  # search_archives). Semantic search trên nội dung file MD đã chunk +
+  # embed sẵn.
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: get_profile_detail
+    description: >
+      Trả lời câu hỏi chi tiết TRONG PHẠM VI 1 hồ sơ CỤ THỂ đã biết
+      archive_id (lấy từ search_profile/search_archives trước đó).
+      Semantic search trên nội dung file MD của hồ sơ đó (đã chunk +
+      embed sẵn trong Qdrant), trả về các đoạn text liên quan nhất kèm
+      nguồn (file_url, page_number). Nếu CHƯA có archive_id (chỉ có
+      tên người/từ khóa), dùng find_profile_and_answer thay vì tool
+      này.
+    inputSchema:
+      type: object
+      properties:
+        archive_id:
+          type: string
+          description: "ID hồ sơ cần hỏi, lấy từ kết quả search_profile hoặc search_archives."
+        question:
+          type: string
+          description: "Câu hỏi cụ thể về nội dung hồ sơ, VD 'quyết định tăng lương vào ngày nào'."
+        top_k:
+          type: integer
+          description: "Số đoạn text tối đa trả về. Mặc định và tối đa là 5."
+      required: ["archive_id", "question"]
+
+  # ────────────────────────────────────────────────────────────────
+  # TOOL: Find Profile And Answer — kết hợp tìm hồ sơ theo `key` (VD
+  # tên người) rồi trả lời `question` trong CHÍNH hồ sơ đó, dùng khi
+  # CHƯA biết archive_id. Gộp 2 bước search_profile + get_profile_detail
+  # thành 1 lần gọi.
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: find_profile_and_answer
+    description: >
+      Dùng khi câu hỏi gắn với 1 hồ sơ/1 người CỤ THỂ nhưng CHƯA biết
+      archive_id — VD: "Lê Minh Tuấn được quyết định tăng lương vào
+      ngày nào?" -> key="Lê Minh Tuấn", question="quyết định tăng
+      lương vào ngày nào". Tool tự tìm hồ sơ khớp nhất với `key`, rồi
+      tìm đoạn text trả lời `question` TRONG chính hồ sơ đó (nội dung
+      file MD đã ingest). Không cần tự gọi search_profile rồi
+      get_profile_detail riêng lẻ. Nếu câu hỏi có thể khớp với NHIỀU hồ
+      sơ khác nhau (không rõ 1 hồ sơ cụ thể), dùng search_content thay
+      vì tool này.
+    inputSchema:
+      type: object
+      properties:
+        key:
+          type: string
+          description: "Từ khóa xác định hồ sơ cần tìm, thường là tên người hoặc mã hồ sơ."
+        question:
+          type: string
+          description: "Câu hỏi cụ thể cần trả lời trong nội dung hồ sơ đó."
+        top_k:
+          type: integer
+          description: "Số đoạn text tối đa trả về. Mặc định và tối đa là 5."
+      required: ["key", "question"]
+
+  # ────────────────────────────────────────────────────────────────
+  # TOOL: Search Content — tìm nội dung xuyên suốt TẤT CẢ hồ sơ đã
+  # ingest, KHÔNG giới hạn 1 hồ sơ cụ thể. Dùng cho câu hỏi liệt kê/
+  # khám phá khi chưa biết trước hồ sơ nào liên quan.
+  # ────────────────────────────────────────────────────────────────
+  - category: mcp
+    name_tool: search_content
+    description: >
+      Tìm đoạn nội dung liên quan đến câu hỏi TRÊN TOÀN BỘ hồ sơ đã
+      ingest, KHÔNG giới hạn 1 hồ sơ cụ thể — dùng khi câu hỏi có thể
+      khớp với NHIỀU hồ sơ khác nhau, VD: "tìm những hồ sơ là nông
+      dân", "hồ sơ nào có bố mẹ làm nông nghiệp". Khác với
+      find_profile_and_answer (cần biết `key` của 1 hồ sơ cụ thể
+      trước), tool này tìm trực tiếp trong nội dung mà không cần biết
+      trước hồ sơ nào. Mỗi kết quả trả về kèm archive_id để biết đoạn
+      đó thuộc hồ sơ nào.
+    inputSchema:
+      type: object
+      properties:
+        question:
+          type: string
+          description: "Câu hỏi/chủ đề cần tìm trong nội dung tất cả hồ sơ."
+        top_k:
+          type: integer
+          description: "Số đoạn text tối đa trả về. Mặc định và tối đa là 5."
+      required: ["question"]
+
+  # ────────────────────────────────────────────────────────────────
   # TOOL 3: Search Archives — GET /api/public/archive (live, có filter
   # chính xác theo field thật, KHÁC search_profile là semantic search)
   # ────────────────────────────────────────────────────────────────

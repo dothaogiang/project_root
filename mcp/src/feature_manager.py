@@ -25,6 +25,21 @@ from urllib.parse import urlparse, parse_qs
 from typing import Optional
 
 logger = get_logger(__name__)
+
+# Số kết quả tối đa trả về cho MỌI tool search (search_profile,
+# get_profile_detail, search_archives) — dù caller truyền top_k/size
+# lớn hơn, kết quả cũng bị cắt về tối đa giá trị này để tránh trả
+# về quá nhiều hồ sơ/đoạn text không cần thiết cho chatbot.
+MAX_TOP_K = 5
+
+
+def _clamp_top_k(value: int) -> int:
+    """Ép value không vượt quá MAX_TOP_K (vẫn cho phép nhỏ hơn nếu caller muốn ít hơn)."""
+    if value is None:
+        return MAX_TOP_K
+    return min(value, MAX_TOP_K)
+
+
 def _extract_file_key(file_url: str) -> Optional[str]:
     """Tách 'key' từ URL dạng .../files/proxy?key=xxx — trả về đã decode sẵn."""
     parsed = urlparse(file_url)
@@ -75,14 +90,17 @@ class FeatureManager:
 
     @staticmethod
     @catch_tool_errors
-    async def search_profile(keyword: str, top_k: int = 10) -> dict:
+    async def search_profile(keyword: str, top_k: int = MAX_TOP_K) -> dict:
         """
         Tìm hồ sơ (archive) theo từ khóa tự do, hybrid search (dense+sparse).
         Đây là tầng "định danh hồ sơ" - dùng archive_id trả về để gọi tiếp
         get_profile_detail nếu cần hỏi sâu vào nội dung.
+
+        top_k luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
+        giá trị lớn hơn — tránh trả về quá nhiều hồ sơ không cần thiết.
         """
         service = get_retrieval_service()
-        profiles = service.search_profiles(keyword=keyword, top_k=top_k)
+        profiles = service.search_profiles(keyword=keyword, top_k=_clamp_top_k(top_k))
 
         return {
             "keyword": keyword,
@@ -105,15 +123,20 @@ class FeatureManager:
 
     @staticmethod
     @catch_tool_errors
-    async def get_profile_detail(archive_id: str, question: str, top_k: int = 5) -> dict:
+    async def get_profile_detail(archive_id: str, question: str, top_k: int = MAX_TOP_K) -> dict:
         """
         Trả lời câu hỏi chi tiết TRONG PHẠM VI 1 hồ sơ cụ thể. MCP chỉ làm
         nhiệm vụ RETRIEVAL - trả về các đoạn văn bản liên quan nhất kèm
         nguồn (file_url, page_number). Việc tổng hợp thành câu trả lời tự
         nhiên là do LLM phía chatbot đảm nhận (tầng Generation của RAG).
+
+        top_k luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
+        giá trị lớn hơn.
         """
         service = get_retrieval_service()
-        chunks = service.search_chunks_in_archive(archive_id=archive_id, question=question, top_k=top_k)
+        chunks = service.search_chunks_in_archive(
+            archive_id=archive_id, question=question, top_k=_clamp_top_k(top_k)
+        )
 
         if not chunks:
             return {
@@ -141,6 +164,112 @@ class FeatureManager:
         }
 
     # ────────────────────────────────────────────────────────────────
+    # TOOL: Find Profile And Answer — kết hợp tìm hồ sơ theo `key` (VD
+    # tên người) + trả lời `question` trong CHÍNH nội dung MD của hồ sơ
+    # đó. Dùng khi câu hỏi gắn với 1 hồ sơ cụ thể nhưng chưa biết
+    # archive_id, VD: "Lê Minh Tuấn được quyết định tăng lương vào
+    # ngày nào?" -> key="Lê Minh Tuấn",
+    # question="quyết định tăng lương vào ngày nào".
+    # ────────────────────────────────────────────────────────────────
+    @staticmethod
+    @catch_tool_errors
+    async def find_profile_and_answer(key: str, question: str, top_k: int = MAX_TOP_K) -> dict:
+        """
+        Tìm hồ sơ khớp nhất với `key` (tên người, mã hồ sơ...), sau đó
+        trả lời `question` bằng cách tìm đoạn text liên quan nhất TRONG
+        CHÍNH hồ sơ đó (nội dung file MD đã ingest sẵn). Dùng khi câu
+        hỏi của người dùng gắn với 1 hồ sơ/1 người cụ thể nhưng chưa có
+        archive_id — không cần tự gọi search_profile rồi get_profile_detail
+        riêng lẻ, tool này làm cả 2 bước trong 1 lần gọi.
+
+        top_k luôn bị ép về tối đa MAX_TOP_K (5).
+        """
+        service = get_retrieval_service()
+        profile, chunks = service.find_profile_and_answer(
+            key=key, question=question, top_k=_clamp_top_k(top_k)
+        )
+
+        if profile is None:
+            return {
+                "key": key,
+                "question": question,
+                "found": False,
+                "message": f"Không tìm thấy hồ sơ nào khớp với '{key}'. "
+                           f"Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin.",
+            }
+
+        return {
+            "key": key,
+            "question": question,
+            "found": bool(chunks),
+            "matched_profile": {
+                "archive_id": profile.archive_id,
+                "title": profile.title,
+                "arcFileCode": profile.arc_file_code,
+                "score": profile.score,
+            },
+            "message": None if chunks else (
+                "Tìm thấy hồ sơ khớp với key nhưng không có đoạn nội dung nào "
+                "liên quan đến câu hỏi. Đừng tự suy đoán hoặc bịa thông tin."
+            ),
+            "chunks": [
+                {
+                    "text": c.text,
+                    "file_url": c.file_url,
+                    "page_number": c.page_number,
+                    "extraction_method": c.extraction_method,
+                    "score": c.score,
+                }
+                for c in chunks
+            ],
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    # TOOL: Search Content — tìm nội dung xuyên suốt TẤT CẢ hồ sơ đã
+    # ingest (không giới hạn 1 archive_id cụ thể). Dùng cho câu hỏi
+    # kiểu liệt kê/khám phá khi chưa biết trước hồ sơ nào liên quan,
+    # VD: "tìm những hồ sơ là nông dân", "hồ sơ nào có bố mẹ làm nông
+    # nghiệp".
+    # ────────────────────────────────────────────────────────────────
+    @staticmethod
+    @catch_tool_errors
+    async def search_content(question: str, top_k: int = MAX_TOP_K) -> dict:
+        """
+        Tìm đoạn text liên quan nhất đến `question` TRÊN TOÀN BỘ hồ sơ
+        đã ingest, KHÔNG giới hạn 1 hồ sơ cụ thể. Dùng khi câu hỏi có
+        thể khớp với NHIỀU hồ sơ khác nhau và chưa biết trước hồ sơ
+        nào (khác với find_profile_and_answer — tool đó cần biết
+        `key` của 1 hồ sơ cụ thể trước). Mỗi kết quả trả về kèm
+        archive_id để biết đoạn đó thuộc hồ sơ nào — muốn xem chi tiết
+        hồ sơ đó thì gọi tiếp get_profile_detail hoặc search_profile.
+
+        top_k luôn bị ép về tối đa MAX_TOP_K (5).
+        """
+        service = get_retrieval_service()
+        chunks = service.search_chunks_all(question=question, top_k=_clamp_top_k(top_k))
+
+        return {
+            "question": question,
+            "found": bool(chunks),
+            "message": None if chunks else (
+                "Không tìm thấy đoạn nội dung nào liên quan trong bất kỳ hồ sơ nào. "
+                "Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin."
+            ),
+            "chunks": [
+                {
+                    "archive_id": c.archive_id,
+                    "text": c.text,
+                    "file_url": c.file_url,
+                    "page_number": c.page_number,
+                    "project_name": c.project_name,
+                    "extraction_method": c.extraction_method,
+                    "score": c.score,
+                }
+                for c in chunks
+            ],
+        }
+
+    # ────────────────────────────────────────────────────────────────
     # TOOL 3: Search Archives — tìm danh sách hồ sơ theo field lọc
     # CHÍNH XÁC (status, kho, ngôn ngữ, ngày tạo/sửa...), gọi trực tiếp
     # Public Archive API, không qua Qdrant/semantic search.
@@ -158,7 +287,7 @@ class FeatureManager:
             updated_from: str = None,
             updated_to: str = None,
             page: int = 0,
-            size: int = 20,
+            size: int = MAX_TOP_K,
     ) -> dict:
         """
         Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keyword/filter
@@ -167,7 +296,11 @@ class FeatureManager:
         trên dữ liệu đã index sẵn (bắt các trường hợp keyword mơ hồ về
         nghĩa, VD "làm nông" -> "nông dân"). Người gọi không cần tự
         chọn cách tìm, tool tự quyết định.
+
+        size luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
+        giá trị lớn hơn, hoặc khi live API trả về nhiều hơn 5 hồ sơ.
         """
+        size = _clamp_top_k(size)
         client = get_archive_api_client()
         result = await client.search_archives(
             keyword=keyword, status=status, warehouse_id=warehouse_id,
@@ -176,6 +309,14 @@ class FeatureManager:
             updated_from=updated_from, updated_to=updated_to,
             page=page, size=size,
         )
+
+        # Phòng trường hợp live API không tôn trọng "size" (trả về nhiều
+        # hơn yêu cầu) — vẫn cắt về tối đa MAX_TOP_K trước khi trả ra.
+        if len(result.get("content", [])) > MAX_TOP_K:
+            result["content"] = result["content"][:MAX_TOP_K]
+            page_info = result.get("page") or {}
+            page_info["size"] = MAX_TOP_K
+            result["page"] = page_info
 
         for record in result.get("content", []):
             record["hasFiles"] = bool(record.get("projects"))
@@ -201,7 +342,7 @@ class FeatureManager:
             return result
 
         service = get_retrieval_service()
-        profiles = service.search_profiles(keyword=keyword, top_k=size)
+        profiles = service.search_profiles(keyword=keyword, top_k=_clamp_top_k(size))
 
         if not profiles:
             return {

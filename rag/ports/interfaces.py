@@ -76,5 +76,8 @@ class VectorStorePort(ABC):
 
     @abstractmethod
     def search_chunks(
-        self, query_embedding: Embedding, archive_id: str, top_k: int
-    ) -> list[RetrievedChunk]: ...
+        self, query_embedding: Embedding, top_k: int, archive_id: str | None = None
+    ) -> list[RetrievedChunk]:
+        """Tìm chunk liên quan nhất. archive_id=None -> tìm trên TOÀN BỘ
+        document_chunks (không giới hạn 1 hồ sơ), dùng cho câu hỏi kiểu
+        'tìm hồ sơ nào là nông dân' khi chưa biết trước archive_id."""

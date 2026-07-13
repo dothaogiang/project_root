@@ -55,7 +55,48 @@ class RetrievalService:
         score_gap_ratio: float = _DEFAULT_SCORE_GAP_RATIO,
     ) -> list[RetrievedChunk]:
         """Tìm đoạn text liên quan nhất bên TRONG 1 hồ sơ cụ thể — đây là
-        phần RAG thật sự (retrieval trên nội dung PDF đã OCR/extract)."""
+        phần RAG thật sự (retrieval trên nội dung PDF/MD đã extract)."""
         query_embedding = self._embedder.embed_text(question)
-        results = self._vector_store.search_chunks(query_embedding, archive_id, top_k)
+        results = self._vector_store.search_chunks(query_embedding, top_k, archive_id=archive_id)
         return _filter_by_score_gap(results, score_gap_ratio)
+
+    def search_chunks_all(
+        self,
+        question: str,
+        top_k: int = 5,
+        score_gap_ratio: float = _DEFAULT_SCORE_GAP_RATIO,
+    ) -> list[RetrievedChunk]:
+        """Tìm đoạn text liên quan nhất TRÊN TOÀN BỘ hồ sơ đã ingest,
+        KHÔNG giới hạn 1 archive_id cụ thể. Dùng cho câu hỏi kiểu liệt
+        kê/khám phá khi chưa biết trước hồ sơ nào liên quan, VD "tìm
+        những hồ sơ là nông dân". Mỗi RetrievedChunk trả về có kèm
+        archive_id để biết đoạn đó thuộc hồ sơ nào."""
+        query_embedding = self._embedder.embed_text(question)
+        results = self._vector_store.search_chunks(query_embedding, top_k)
+        return _filter_by_score_gap(results, score_gap_ratio)
+
+    def find_profile_and_answer(
+        self,
+        key: str,
+        question: str,
+        top_k: int = 5,
+        score_gap_ratio: float = _DEFAULT_SCORE_GAP_RATIO,
+    ) -> tuple[RetrievedProfile | None, list[RetrievedChunk]]:
+        """Kết hợp 2 bước cho use case 'hỏi về 1 hồ sơ cụ thể nhưng chưa
+        có archive_id': (1) tìm hồ sơ khớp nhất với `key` (VD tên
+        người, mã hồ sơ), (2) tìm đoạn text trả lời `question` TRONG
+        chính hồ sơ đó. VD: key="Lê Minh Tuấn",
+        question="quyết định tăng lương vào ngày nào".
+
+        Trả về (None, []) nếu không tìm thấy hồ sơ nào khớp `key`."""
+        profiles = self.search_profiles(key, top_k=1)
+        if not profiles:
+            return None, []
+        best_profile = profiles[0]
+        chunks = self.search_chunks_in_archive(
+            archive_id=best_profile.archive_id,
+            question=question,
+            top_k=top_k,
+            score_gap_ratio=score_gap_ratio,
+        )
+        return best_profile, chunks

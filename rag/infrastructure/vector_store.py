@@ -174,11 +174,15 @@ class QdrantVectorStore(VectorStorePort):
             )
             for p in points
         ]
-    def search_chunks(self, query_embedding: Embedding, archive_id: str, top_k: int) -> list[RetrievedChunk]:
-        archive_filter = models.Filter(
-            must=[models.FieldCondition(key="archive_id", match=models.MatchValue(value=archive_id))]
-        )
-        points = self._hybrid_search(rag_config.COLLECTION_CHUNKS, query_embedding, top_k, archive_filter)
+    def search_chunks(
+        self, query_embedding: Embedding, top_k: int, archive_id: str | None = None
+    ) -> list[RetrievedChunk]:
+        query_filter = None
+        if archive_id:
+            query_filter = models.Filter(
+                must=[models.FieldCondition(key="archive_id", match=models.MatchValue(value=archive_id))]
+            )
+        points = self._hybrid_search(rag_config.COLLECTION_CHUNKS, query_embedding, top_k, query_filter)
         return [
             RetrievedChunk(
                 text=p.payload.get("text"),
@@ -186,6 +190,8 @@ class QdrantVectorStore(VectorStorePort):
                 page_number=p.payload.get("page_number"),
                 extraction_method=p.payload.get("extraction_method"),
                 score=round(p.score, 4),
+                archive_id=p.payload.get("archive_id"),
+                project_name=p.payload.get("project_name"),
             )
             for p in points
         ]
