@@ -9,15 +9,16 @@ file YAML, không cần đụng vào registry.py hay server.py.
 2 nhóm tool:
   - search_profile / get_profile_detail: semantic search qua Qdrant
     (dữ liệu đã ingest sẵn bởi rag/), xem rag/README.md.
-  - search_archives / get_archive_detail / get_staff_archive_metadata /
-    get_file_proxy: gọi TRỰC TIẾP (live) vào Public Archive API qua
-    archive_api/client.py, không qua Qdrant/embedding.
+  - search_archives: gọi TRỰC TIẾP (live) vào Public Archive API qua
+    archive_api/client.py, không qua Qdrant/embedding. Response API
+    thật đã kèm sẵn Markdown đầy đủ trong documents[].markdown nên
+    không cần tool "detail" riêng để lấy nội dung.
 """
 import base64
 import functools
 import traceback
 
-from archive_api.client import MAX_INLINE_FILE_BYTES, get_archive_api_client
+from archive_api.client import get_archive_api_client
 from config.configs import config_object
 from rag.retrieval_factory import get_retrieval_service
 from logger import get_logger
@@ -277,7 +278,7 @@ class FeatureManager:
     @staticmethod
     @catch_tool_errors
     async def search_archives(
-            keyword: str = None,
+            keywords: list[str] = None,
             status: str = None,
             warehouse_id: str = None,
             language: str = None,
@@ -290,20 +291,26 @@ class FeatureManager:
             size: int = MAX_TOP_K,
     ) -> dict:
         """
-        Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keyword/filter
+        Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keywords/filter
         trên hệ thống live trước. CHỈ khi không có kết quả nào (0 hồ sơ)
-        VÀ có keyword, tool mới tự động mở rộng sang semantic search
-        trên dữ liệu đã index sẵn (bắt các trường hợp keyword mơ hồ về
+        VÀ có keywords, tool mới tự động mở rộng sang semantic search
+        trên dữ liệu đã index sẵn (bắt các trường hợp từ khóa mơ hồ về
         nghĩa, VD "làm nông" -> "nông dân"). Người gọi không cần tự
         chọn cách tìm, tool tự quyết định.
+
+        `keywords`: truyền 1 HOẶC NHIỀU biến thể từ khóa (VD tên có dấu
+        + không dấu + viết tắt) trong CÙNG 1 lần gọi tool này — KHÔNG tự
+        gọi lại tool nhiều lần cho từng biến thể, tool đã tự gộp kết quả
+        (khử trùng lặp theo id) trong 1 lượt duy nhất, tiết kiệm round-trip.
 
         size luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
         giá trị lớn hơn, hoặc khi live API trả về nhiều hơn 5 hồ sơ.
         """
         size = _clamp_top_k(size)
+        clean_keywords = [k for k in (keywords or []) if k and k.strip()]
         client = get_archive_api_client()
         result = await client.search_archives(
-            keyword=keyword, status=status, warehouse_id=warehouse_id,
+            keywords=clean_keywords, status=status, warehouse_id=warehouse_id,
             language=language, maintenance=maintenance,
             created_from=created_from, created_to=created_to,
             updated_from=updated_from, updated_to=updated_to,
@@ -332,7 +339,7 @@ class FeatureManager:
 
         has_other_filters = any([status, warehouse_id, language, maintenance,
                                  created_from, created_to, updated_from, updated_to])
-        if not keyword or has_other_filters:
+        if not clean_keywords or has_other_filters:
             result["search_mode"] = "keyword"
             result["found"] = False
             result["message"] = (
@@ -341,13 +348,16 @@ class FeatureManager:
             )
             return result
 
+        # Semantic search chỉ nhận 1 chuỗi keyword -> gộp các biến thể lại
+        # thành 1 câu, đủ để embedding bắt được nghĩa chung.
+        merged_keyword = " ".join(clean_keywords)
         service = get_retrieval_service()
-        profiles = service.search_profiles(keyword=keyword, top_k=_clamp_top_k(size))
+        profiles = service.search_profiles(keyword=merged_keyword, top_k=_clamp_top_k(size))
 
         if not profiles:
             return {
                 "search_mode": "semantic_fallback",
-                "keyword": keyword,
+                "keywords": clean_keywords,
                 "found": False,
                 "message": (
                     "Đã tìm chính xác lẫn tìm theo nghĩa gần đúng nhưng không thấy hồ sơ nào phù hợp. "
@@ -359,7 +369,7 @@ class FeatureManager:
 
         return {
             "search_mode": "semantic_fallback",
-            "keyword": keyword,
+            "keywords": clean_keywords,
             "found": True,
             "content": [
                 {

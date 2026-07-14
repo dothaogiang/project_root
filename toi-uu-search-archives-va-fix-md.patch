@@ -1,0 +1,1070 @@
+diff --git a/README.md b/README.md
+index 76a4258..f9e2473 100644
+--- a/README.md
++++ b/README.md
+@@ -24,17 +24,16 @@ Hệ thống expose **6 tool MCP**, chia làm 2 nhóm khác bản chất:
+ **Nhóm B — Live query trực tiếp vào Public Archive API** (không qua
+ Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
+ 
+-- `search_archives` — tìm hồ sơ theo field lọc chính xác (status, kho, ngôn ngữ, khoảng ngày...)
+-- `get_archive_detail` — lấy toàn bộ chi tiết 1 hồ sơ theo UUID (metadata, project, lịch sử mượn)
+-- `get_staff_archive_metadata` — lấy cấu trúc/schema của hồ sơ cán bộ
+-- `get_file_proxy` — lấy nội dung file gốc (MD, ảnh...) đính kèm hồ sơ
++- `search_archives` — tìm hồ sơ theo `keywords` (mảng, 1+ biến thể từ
++  khóa gộp trong 1 lượt gọi) + field lọc chính xác (status, kho, ngôn
++  ngữ, khoảng ngày...). Response đã kèm sẵn Markdown đầy đủ của tài
++  liệu trong `content[].projects[].documents[].markdown` — không cần
++  tool "detail" riêng để lấy nội dung.
+ 
+ Quy tắc chọn tool cho chatbot: chưa biết `archive_id` → luôn
+-`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; đã
+-biết `archive_id` mà cần chi tiết đầy đủ (kể cả lịch sử mượn) →
+-`get_archive_detail`; cần hỏi sâu nội dung file MD → `get_profile_detail`;
+-cần schema hồ sơ cán bộ → `get_staff_archive_metadata`; cần xem/tải
+-file → `get_file_proxy`.
++`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; cần
++hỏi sâu/tìm mờ theo nghĩa trong nội dung → `get_profile_detail` /
++`find_profile_and_answer` / `search_content`.
+ 
+ ## Cấu trúc dự án
+ 
+@@ -47,7 +46,7 @@ project_root/
+ │   │   ├── server.py             # Entry point, chạy MCP server (streamable-http)
+ │   │   ├── feature_manager.py    # Nơi định nghĩa method cho từng tool (khớp tên với tools.yaml)
+ │   │   ├── archive_api/          # Client LIVE query trực tiếp Public Archive API (nhóm B)
+-│   │   │   ├── client.py         #   search_archives, get_archive_detail, get_staff_archive_metadata, get_file_proxy
++│   │   │   ├── client.py         #   search_archives (nhận keywords: list[str], fan-out + gộp kết quả)
+ │   │   │   └── token_manager.py  #   Quản lý X-Chatbot-Token (cache + auto refresh khi 401)
+ │   │   ├── logger.py
+ │   │   ├── config/configs.py     # Cấu hình riêng của MCP (port, resources dir, archive API paths, token...)
+diff --git a/mcp/Resources/tools.yaml b/mcp/Resources/tools.yaml
+index 8cbacc6..dac3a6b 100644
+--- a/mcp/Resources/tools.yaml
++++ b/mcp/Resources/tools.yaml
+@@ -128,13 +128,23 @@ tools:
+       (semantic) trên dữ liệu đã đánh index. Không cần gọi tool nào
+       khác để "tìm theo nghĩa" — cứ gọi tool này. Response có field
+       "search_mode": "keyword" hoặc "semantic_fallback" để biết kết quả
+-      đến từ nguồn nào.
++      đến từ nguồn nào. Kết quả trả về đã kèm sẵn nội dung Markdown đầy
++      đủ của tài liệu (nếu có) trong content[].projects[].documents[].markdown
++      — không cần gọi thêm tool nào khác để lấy nội dung chi tiết.
+     inputSchema:
+       type: object
+       properties:
+-        keyword:
+-          type: string
+-          description: "Từ khóa tìm trong tiêu đề, mã hồ sơ (arcFileCode), hoặc mã hộp (boxCode)."
++        keywords:
++          type: array
++          items:
++            type: string
++          description: >
++            1 hoặc nhiều biến thể từ khóa cần tìm trong tiêu đề, mã hồ
++            sơ (arcFileCode), hoặc mã hộp (boxCode) — VD tên có dấu +
++            không dấu + viết tắt của cùng 1 người. Truyền TẤT CẢ biến
++            thể nghi ngờ vào 1 mảng trong 1 lần gọi tool này (tool tự
++            gộp kết quả), KHÔNG tự gọi lại tool nhiều lần cho từng
++            biến thể riêng lẻ.
+         status:
+           type: string
+           description: "Lọc theo trạng thái hồ sơ."
+diff --git a/mcp/src/archive_api/client.py b/mcp/src/archive_api/client.py
+index 452fc77..d9548cf 100644
+--- a/mcp/src/archive_api/client.py
++++ b/mcp/src/archive_api/client.py
+@@ -1,17 +1,23 @@
+ """
+-archive_api/client.py — Client gọi TRỰC TIẾP Public Archive API cho
+-4 nhóm API mới (search, detail, staff metadata, file proxy).
++archive_api/client.py — Client gọi TRỰC TIẾP Public Archive API, phục vụ
++tool `search_archives` (tìm hồ sơ theo keyword/filter chính xác, LIVE).
+ 
+ KHÁC với rag/infrastructure/archive_api_client.py: client đó chỉ phục
+-vụ ingestion hàng loạt cho pipeline RAG (fetch_page/download_file để
+-đưa vào Qdrant, không cần auth). Client này phục vụ tool MCP trả lời
++vụ ingestion hàng loạt cho pipeline RAG (fetch_page để đưa vào Qdrant, không cần auth). Client này phục vụ tool MCP trả lời
+ LIVE cho người dùng — gọi thẳng theo field lọc chính xác, có auth qua
+ X-Chatbot-Token, và tự refresh token khi gặp 401.
+ 
++Response search_archives của API thật hiện đã trả kèm nội dung Markdown
++đầy đủ trong từng project/document (documents[].markdown) — nên tool
++này không cần gọi thêm endpoint "detail" nào khác để lấy nội dung.
++
+ Cố ý đặt trong mcp/ (không phải rag/) vì đây không phải logic
+ embedding/vector — mcp/ sở hữu tích hợp trực tiếp này để phục vụ đúng
+-tool của nó, giữ rag/ chỉ tập trung vào ingestion + semantic retrieval.
++tool của nó, giữ rag/ chỉ tập trung vào ingestion + semantic retrieval
++(dùng cho tìm mờ/ngữ nghĩa qua search_profile/get_profile_detail/
++find_profile_and_answer/search_content).
+ """
++import asyncio
+ from typing import Any, Optional
+ 
+ import httpx
+@@ -22,11 +28,6 @@ from logger import get_logger
+ 
+ logger = get_logger(__name__)
+ 
+-# File lớn hơn mức này chỉ trả metadata + gợi ý thay vì base64 inline,
+-# tránh làm phình payload trả về cho LLM (tốn token, có thể vượt giới
+-# hạn kích thước phản hồi của tool).
+-MAX_INLINE_FILE_BYTES = 8 * 1024 * 1024  # 8MB
+-
+ 
+ class ArchiveApiClient:
+     def __init__(self):
+@@ -53,7 +54,7 @@ class ArchiveApiClient:
+ 
+     async def search_archives(
+             self,
+-            keyword: Optional[str] = None,
++            keywords: Optional[list[str]] = None,
+             status: Optional[str] = None,
+             warehouse_id: Optional[str] = None,
+             language: Optional[str] = None,
+@@ -72,9 +73,17 @@ class ArchiveApiClient:
+         totalPages/totalElements/last để bên gọi (feature_manager) biết
+         còn trang tiếp theo hay không và tự quyết định có cần gọi lại
+         tool với page+1 hay dừng lại vì đã tìm thấy.
++
++        `keywords`: 1 HOẶC NHIỀU biến thể từ khóa (VD tên có dấu, tên
++        không dấu, viết tắt...) trong CÙNG 1 lượt gọi tool — thay vì bên
++        gọi (LLM) phải tự lặp lại tool nhiều lần với từng biến thể.
++        Public Archive API chỉ nhận 1 `keyword` mỗi request, nên ở đây
++        tự fan-out song song (asyncio.gather) — 1 request/biến thể nếu
++        có >1 keyword, rồi gộp + khử trùng lặp theo `id` trước khi trả
++        về. Với 1 keyword (hoặc không có), chỉ tốn đúng 1 request như
++        trước, không phát sinh thêm overhead.
+         """
+-        params = {
+-            "keyword": keyword,
++        base_params = {
+             "status": status,
+             "warehouseId": warehouse_id,
+             "language": language,
+@@ -86,15 +95,47 @@ class ArchiveApiClient:
+             "page": page,
+             "size": size,
+         }
+-        params = {k: v for k, v in params.items() if v is not None}  # bỏ filter rỗng, không gửi lên API
+-
+-        resp = await self._request("GET", config_object.ARCHIVE_SEARCH_PATH, params=params)
+-        return resp.json()
+-
+-    async def get_archive_detail(self, archive_id: str) -> dict[str, Any]:
+-        path = config_object.ARCHIVE_DETAIL_PATH.format(id=archive_id)
+-        resp = await self._request("GET", path)
+-        return resp.json()
++        base_params = {k: v for k, v in base_params.items() if v is not None}
++
++        # Khử trùng lặp + bỏ chuỗi rỗng, giữ nguyên thứ tự biến thể được truyền vào
++        unique_keywords = list(dict.fromkeys(k for k in (keywords or []) if k and k.strip()))
++
++        if len(unique_keywords) <= 1:
++            params = dict(base_params)
++            if unique_keywords:
++                params["keyword"] = unique_keywords[0]
++            resp = await self._request("GET", config_object.ARCHIVE_SEARCH_PATH, params=params)
++            return resp.json()
++
++        # >1 keyword: gọi song song, mỗi request 1 keyword, rồi gộp kết quả
++        async def _search_one(kw: str) -> dict[str, Any]:
++            params = {**base_params, "keyword": kw}
++            resp = await self._request("GET", config_object.ARCHIVE_SEARCH_PATH, params=params)
++            return resp.json()
++
++        pages = await asyncio.gather(*(_search_one(kw) for kw in unique_keywords))
++
++        merged_content: list[dict[str, Any]] = []
++        seen_ids: set[str] = set()
++        for page_result in pages:
++            for record in page_result.get("content", []):
++                rid = record.get("id")
++                if rid is not None and rid in seen_ids:
++                    continue
++                if rid is not None:
++                    seen_ids.add(rid)
++                merged_content.append(record)
++
++        merged_content = merged_content[:size]
++        return {
++            "content": merged_content,
++            "page": {
++                "size": size,
++                "number": page,
++                "totalElements": len(merged_content),
++                "totalPages": 1,
++            },
++        }
+ 
+ 
+ _client: Optional[ArchiveApiClient] = None
+diff --git a/mcp/src/clients/archive_api_client.py b/mcp/src/clients/archive_api_client.py
+deleted file mode 100644
+index 25e3c8a..0000000
+--- a/mcp/src/clients/archive_api_client.py
++++ /dev/null
+@@ -1,40 +0,0 @@
+-import httpx
+-from src.config import configs
+-from src.clients.auth_client import get_chatbot_token
+-
+-async def _get(path: str, params: dict | None = None):
+-    token = await get_chatbot_token()
+-    async with httpx.AsyncClient(timeout=15) as client:
+-        resp = await client.get(
+-            f"{configs.ARCHIVE_API_BASE_URL}{path}",
+-            params=params,
+-            headers={"X-Chatbot-Token": token},
+-        )
+-        resp.raise_for_status()
+-        return resp.json()
+-
+-async def search_archives(
+-    keyword: str | None = None,
+-    status: str | None = None,
+-    warehouseId: str | None = None,
+-    language: str | None = None,
+-    maintenance: str | None = None,
+-    createdFrom: str | None = None,
+-    createdTo: str | None = None,
+-    updatedFrom: str | None = None,
+-    updatedTo: str | None = None,
+-    page: int = 1,
+-    size: int = 10,
+-):
+-    params = {k: v for k, v in locals().items() if v is not None}
+-    return await _get("/api/public/archives", params)
+-
+-async def get_archive_detail(archive_id: str):
+-    return await _get(f"/api/public/archives/{archive_id}")
+-
+-async def get_staff_archive_metadata(only_metadata: bool = True):
+-    return await _get("/api/public/staff-archive", {"only_metadata": str(only_metadata).lower()})
+-
+-async def get_file_proxy_url(key: str, fileName: str):
+-    # File proxy thường trả file nhị phân, nên chỉ cần build URL để trả về cho người dùng
+-    return f"{configs.ARCHIVE_API_BASE_URL}/api/public/files/proxy?key={key}&fileName={fileName}"
+diff --git a/mcp/src/clients/auth_client.py b/mcp/src/clients/auth_client.py
+deleted file mode 100644
+index 7d649d8..0000000
+--- a/mcp/src/clients/auth_client.py
++++ /dev/null
+@@ -1,27 +0,0 @@
+-import time
+-import httpx
+-from src.config import configs
+-from src.logger import logger
+-
+-_token_cache = {"token": None, "expires_at": 0}
+-
+-async def get_chatbot_token() -> str:
+-    now = time.time()
+-    if _token_cache["token"] and _token_cache["expires_at"] > now + 30:
+-        return _token_cache["token"]
+-
+-    async with httpx.AsyncClient(timeout=10) as client:
+-        resp = await client.post(
+-            configs.CHATBOT_TOKEN_URL,
+-            json={
+-                "clientId": configs.CHATBOT_CLIENT_ID,
+-                "clientSecret": configs.CHATBOT_CLIENT_SECRET,
+-            },
+-        )
+-        resp.raise_for_status()
+-        data = resp.json()
+-
+-    _token_cache["token"] = data["token"]
+-    _token_cache["expires_at"] = now + data.get("expiresIn", 3600)
+-    logger.info("Đã lấy X-Chatbot-Token mới")
+-    return _token_cache["token"]
+\ No newline at end of file
+diff --git a/mcp/src/config/configs.py b/mcp/src/config/configs.py
+index 3457261..669d777 100644
+--- a/mcp/src/config/configs.py
++++ b/mcp/src/config/configs.py
+@@ -4,8 +4,7 @@ Cấu hình của riêng MCP server (folder mcp/).
+ Gồm 2 nhóm:
+   1. Cấu hình khởi động server (SERVER_NAME, PORT_SERVER, RESOURCES_DIR)
+   2. Cấu hình cho archive_api/ — client gọi TRỰC TIẾP (live) Public
+-     Archive API để phục vụ 4 tool: search_archives, get_archive_detail,
+-     get_staff_archive_metadata, get_file_proxy.
++     Archive API để phục vụ tool search_archives.
+ 
+ KHÔNG chứa cấu hình pipeline RAG (Qdrant, embedding, OCR, chunking,
+ sync state) — phần đó nằm trong rag/config/rag_config.py, vì đó là
+@@ -37,8 +36,6 @@ class Config:
+     # --- Public Archive API (live query, dùng bởi archive_api/client.py) ---
+     ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.46:4000")
+     ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archives")
+-    ARCHIVE_DETAIL_PATH = os.getenv("ARCHIVE_DETAIL_PATH", "/api/public/archives/{id}")
+-    STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
+     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+ 
+     AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"
+diff --git a/mcp/src/feature_manager.py b/mcp/src/feature_manager.py
+index 2eba04d..0974a36 100644
+--- a/mcp/src/feature_manager.py
++++ b/mcp/src/feature_manager.py
+@@ -9,15 +9,16 @@ file YAML, không cần đụng vào registry.py hay server.py.
+ 2 nhóm tool:
+   - search_profile / get_profile_detail: semantic search qua Qdrant
+     (dữ liệu đã ingest sẵn bởi rag/), xem rag/README.md.
+-  - search_archives / get_archive_detail / get_staff_archive_metadata /
+-    get_file_proxy: gọi TRỰC TIẾP (live) vào Public Archive API qua
+-    archive_api/client.py, không qua Qdrant/embedding.
++  - search_archives: gọi TRỰC TIẾP (live) vào Public Archive API qua
++    archive_api/client.py, không qua Qdrant/embedding. Response API
++    thật đã kèm sẵn Markdown đầy đủ trong documents[].markdown nên
++    không cần tool "detail" riêng để lấy nội dung.
+ """
+ import base64
+ import functools
+ import traceback
+ 
+-from archive_api.client import MAX_INLINE_FILE_BYTES, get_archive_api_client
++from archive_api.client import get_archive_api_client
+ from config.configs import config_object
+ from rag.retrieval_factory import get_retrieval_service
+ from logger import get_logger
+@@ -277,7 +278,7 @@ class FeatureManager:
+     @staticmethod
+     @catch_tool_errors
+     async def search_archives(
+-            keyword: str = None,
++            keywords: list[str] = None,
+             status: str = None,
+             warehouse_id: str = None,
+             language: str = None,
+@@ -290,20 +291,26 @@ class FeatureManager:
+             size: int = MAX_TOP_K,
+     ) -> dict:
+         """
+-        Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keyword/filter
++        Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keywords/filter
+         trên hệ thống live trước. CHỈ khi không có kết quả nào (0 hồ sơ)
+-        VÀ có keyword, tool mới tự động mở rộng sang semantic search
+-        trên dữ liệu đã index sẵn (bắt các trường hợp keyword mơ hồ về
++        VÀ có keywords, tool mới tự động mở rộng sang semantic search
++        trên dữ liệu đã index sẵn (bắt các trường hợp từ khóa mơ hồ về
+         nghĩa, VD "làm nông" -> "nông dân"). Người gọi không cần tự
+         chọn cách tìm, tool tự quyết định.
+ 
++        `keywords`: truyền 1 HOẶC NHIỀU biến thể từ khóa (VD tên có dấu
++        + không dấu + viết tắt) trong CÙNG 1 lần gọi tool này — KHÔNG tự
++        gọi lại tool nhiều lần cho từng biến thể, tool đã tự gộp kết quả
++        (khử trùng lặp theo id) trong 1 lượt duy nhất, tiết kiệm round-trip.
++
+         size luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
+         giá trị lớn hơn, hoặc khi live API trả về nhiều hơn 5 hồ sơ.
+         """
+         size = _clamp_top_k(size)
++        clean_keywords = [k for k in (keywords or []) if k and k.strip()]
+         client = get_archive_api_client()
+         result = await client.search_archives(
+-            keyword=keyword, status=status, warehouse_id=warehouse_id,
++            keywords=clean_keywords, status=status, warehouse_id=warehouse_id,
+             language=language, maintenance=maintenance,
+             created_from=created_from, created_to=created_to,
+             updated_from=updated_from, updated_to=updated_to,
+@@ -332,7 +339,7 @@ class FeatureManager:
+ 
+         has_other_filters = any([status, warehouse_id, language, maintenance,
+                                  created_from, created_to, updated_from, updated_to])
+-        if not keyword or has_other_filters:
++        if not clean_keywords or has_other_filters:
+             result["search_mode"] = "keyword"
+             result["found"] = False
+             result["message"] = (
+@@ -341,13 +348,16 @@ class FeatureManager:
+             )
+             return result
+ 
++        # Semantic search chỉ nhận 1 chuỗi keyword -> gộp các biến thể lại
++        # thành 1 câu, đủ để embedding bắt được nghĩa chung.
++        merged_keyword = " ".join(clean_keywords)
+         service = get_retrieval_service()
+-        profiles = service.search_profiles(keyword=keyword, top_k=_clamp_top_k(size))
++        profiles = service.search_profiles(keyword=merged_keyword, top_k=_clamp_top_k(size))
+ 
+         if not profiles:
+             return {
+                 "search_mode": "semantic_fallback",
+-                "keyword": keyword,
++                "keywords": clean_keywords,
+                 "found": False,
+                 "message": (
+                     "Đã tìm chính xác lẫn tìm theo nghĩa gần đúng nhưng không thấy hồ sơ nào phù hợp. "
+@@ -359,7 +369,7 @@ class FeatureManager:
+ 
+         return {
+             "search_mode": "semantic_fallback",
+-            "keyword": keyword,
++            "keywords": clean_keywords,
+             "found": True,
+             "content": [
+                 {
+diff --git a/mcp/src/tools/archive_tools.py b/mcp/src/tools/archive_tools.py
+deleted file mode 100644
+index 9c86756..0000000
+--- a/mcp/src/tools/archive_tools.py
++++ /dev/null
+@@ -1,24 +0,0 @@
+-from src.clients import archive_api_client as api
+-
+-async def search_archive(keyword: str = None, status: str = None, warehouseId: str = None,
+-                          language: str = None, maintenance: str = None,
+-                          createdFrom: str = None, createdTo: str = None,
+-                          updatedFrom: str = None, updatedTo: str = None,
+-                          page: int = 1, size: int = 10) -> dict:
+-    """Tìm kiếm danh sách hồ sơ lưu trữ theo từ khóa/bộ lọc."""
+-    return await api.search_archives(keyword, status, warehouseId, language,
+-                                      maintenance, createdFrom, createdTo,
+-                                      updatedFrom, updatedTo, page, size)
+-
+-async def get_archive_detail(archive_id: str) -> dict:
+-    """Lấy chi tiết một hồ sơ theo id (chỉ dùng khi đã có id, thường lấy từ kết quả search_archive)."""
+-    return await api.get_archive_detail(archive_id)
+-
+-async def get_staff_archive_metadata(only_metadata: bool = True) -> dict:
+-    """Lấy cấu trúc / metadata hồ sơ cán bộ."""
+-    return await api.get_staff_archive_metadata(only_metadata)
+-
+-async def get_archive_file(key: str, fileName: str) -> dict:
+-    """Trả về link để xem/tải file đính kèm trong hồ sơ."""
+-    url = await api.get_file_proxy_url(key, fileName)
+-    return {"fileUrl": url, "fileName": fileName}
+\ No newline at end of file
+diff --git a/rag/application/ingestion_service.py b/rag/application/ingestion_service.py
+index 79b3c72..b98f4a0 100644
+--- a/rag/application/ingestion_service.py
++++ b/rag/application/ingestion_service.py
+@@ -55,14 +55,14 @@ class IngestionService:
+         embedder: EmbeddingProviderPort,
+         vector_store: VectorStorePort,
+         page_size: int = 100,
+-        download_concurrency: int = 4,
++        sync_concurrency: int = 4,
+     ):
+         self._archive_api = archive_api
+         self._md_extractor = md_extractor
+         self._embedder = embedder
+         self._vector_store = vector_store
+         self._page_size = page_size
+-        self._download_semaphore = asyncio.Semaphore(download_concurrency)
++        self._sync_semaphore = asyncio.Semaphore(sync_concurrency)
+ 
+     async def run(self) -> None:
+         self._vector_store.ensure_collections()
+@@ -89,36 +89,29 @@ class IngestionService:
+     async def _sync_one_archive(self, archive: ArchiveRecord) -> None:
+         await self._sync_archive_metadata(archive)
+ 
+-        md_urls = archive.md_file_urls()
+-        if not md_urls:
+-            logger.info(f"Archive {archive.id}: không có file MD, bỏ qua nội dung chi tiết")
++        markdown_docs = archive.markdown_documents()
++        if not markdown_docs:
++            logger.info(f"Archive {archive.id}: không có nội dung Markdown, bỏ qua nội dung chi tiết")
+             return
+ 
+-        for project_name, file_url in md_urls:
+-            await self._sync_file(archive, project_name, file_url)
++        for project_name, file_url, text in markdown_docs:
++            await self._sync_file(archive, project_name, file_url, text)
+ 
+     async def _sync_archive_metadata(self, archive: ArchiveRecord) -> None:
+         search_text = _build_archive_search_text(archive)
+         embedding = self._embedder.embed_text(search_text)
+         self._vector_store.upsert_archive(archive, embedding)
+ 
+-    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str) -> None:
+-        async with self._download_semaphore:
+-            try:
+-                file_bytes = await self._archive_api.download_file(file_url)
+-            except Exception as e:
+-                logger.error(f"Không tải được file {file_url}: {e}")
+-                return
+-
+-            logger.info(f"Đang extract: {file_url}")
+-            chunks = self._md_extractor.extract_and_chunk(archive.id, file_url, project_name, file_bytes)
++    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str, text: str) -> None:
++        async with self._sync_semaphore:
++            chunks = self._md_extractor.extract_and_chunk(archive.id, file_url, project_name, text)
+ 
+             if not chunks:
+-                logger.warning(f"Không trích được text từ: {file_url}")
++                logger.warning(f"Không trích được text từ: {file_url or project_name}")
+                 return
+ 
+             embeddings = self._embedder.embed_batch([c.text for c in chunks])
+             self._vector_store.delete_chunks_by_file(archive.id, file_url)
+             self._vector_store.upsert_chunks(chunks, embeddings)
+ 
+-            logger.info(f"Đã đồng bộ {len(chunks)} chunk từ: {file_url}")
+\ No newline at end of file
++            logger.info(f"Đã đồng bộ {len(chunks)} chunk từ: {file_url or project_name}")
+\ No newline at end of file
+diff --git a/rag/config/rag_config.py b/rag/config/rag_config.py
+index 2fe06f5..7c220a5 100644
+--- a/rag/config/rag_config.py
++++ b/rag/config/rag_config.py
+@@ -1,65 +1,3 @@
+-# """
+-# config/rag_config.py — Cấu hình RIÊNG cho module rag/, đọc từ cùng file
+-# .env ở gốc project.
+-#
+-# Module rag/ đọc cấu hình ĐỘC LẬP với src/config/configs.py (tầng MCP),
+-# để rag/ có thể được copy/tái sử dụng ở project khác mà không cần kéo
+-# theo toàn bộ code MCP. Nếu muốn dùng chung 1 file .env (khuyến nghị),
+-# chỉ cần đảm bảo các biến bên dưới có mặt trong .env gốc.
+-# """
+-# import os
+-#
+-# from dotenv import load_dotenv
+-#
+-# load_dotenv()
+-#
+-# BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+-#
+-#
+-# class RagConfig:
+-#     # --- Archive API (nguồn dữ liệu gốc) ---
+-#     ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.32:4010")
+-#     ARCHIVE_API_PATH = os.getenv("ARCHIVE_API_PATH", "/api/public/archive")
+-#     ARCHIVE_API_PAGE_SIZE = int(os.getenv("ARCHIVE_API_PAGE_SIZE", "100"))
+-#     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+-#
+-#     # --- Staff Archive Metadata API ---
+-#     STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
+-#
+-#     # --- File Proxy API ---
+-#     FILE_PROXY_PATH = os.getenv("FILE_PROXY_PATH", "/api/public/files/proxy")
+-#
+-#     # --- Chatbot session token (X-Chatbot-Token) ---
+-#     CHATBOT_TOKEN_PATH = os.getenv("CHATBOT_TOKEN_PATH", "/api/v1/chatbot/session-token")
+-#     CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID") or None
+-#     CHATBOT_CLIENT_SECRET = os.getenv("CHATBOT_CLIENT_SECRET") or None
+-#     # Refresh token sớm hơn hạn thật bao nhiêu giây, tránh race condition
+-#     # ngay sát lúc hết hạn (request đang bay thì token hết hạn giữa chừng)
+-#     TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("TOKEN_REFRESH_BUFFER_SECONDS", "60"))
+-#
+-#     # --- Qdrant ---
+-#     QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+-#     QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
+-#     COLLECTION_ARCHIVES = os.getenv("RAG_COLLECTION_ARCHIVES", "archives")
+-#     COLLECTION_CHUNKS = os.getenv("RAG_COLLECTION_CHUNKS", "document_chunks")
+-#
+-#     # --- Embedding models (fastembed, chạy local) ---
+-#     DENSE_MODEL_NAME = os.getenv("DENSE_MODEL_NAME", "multilingual-e5-large")
+-#     SPARSE_MODEL_NAME = os.getenv("SPARSE_MODEL_NAME", "Qdrant/bm25")
+-#     DENSE_VECTOR_SIZE = int(os.getenv("DENSE_VECTOR_SIZE", "1024"))  # bge-m3 output dim
+-#
+-#
+-#     # --- Chunking ---
+-#     CHUNK_SIZE_CHARS = int(os.getenv("CHUNK_SIZE_CHARS", "1200"))
+-#     CHUNK_OVERLAP_CHARS = int(os.getenv("CHUNK_OVERLAP_CHARS", "200"))
+-#
+-#     # --- Sync state (SQLite, để cron chạy incremental) ---
+-#     SYNC_DB_PATH = os.getenv("SYNC_DB_PATH", os.path.join(BASE_DIR, "sync_state.db"))
+-#     MD_FILE_URL_FIELD = os.getenv("MD_FILE_URL_FIELD", "mdFileUrls")
+-#
+-#
+-# rag_config = RagConfig()
+-
+ """
+ config/rag_config.py — Cấu hình RIÊNG cho module rag/, đọc từ cùng file
+ .env ở gốc project.
+@@ -75,8 +13,6 @@ from dotenv import load_dotenv
+ 
+ load_dotenv()
+ 
+-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+-
+ 
+ class RagConfig:
+     # --- Archive API (nguồn dữ liệu gốc) ---
+@@ -102,12 +38,6 @@ class RagConfig:
+     ARCHIVE_API_PAGE_SIZE = int(os.getenv("ARCHIVE_API_PAGE_SIZE", "100"))
+     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
+ 
+-    # --- Staff Archive Metadata API ---
+-    STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
+-
+-    # --- File Proxy API ---
+-    FILE_PROXY_PATH = os.getenv("FILE_PROXY_PATH", "/api/public/files/proxy")
+-
+     # --- Chatbot session token (X-Chatbot-Token) ---
+     CHATBOT_TOKEN_PATH = os.getenv("CHATBOT_TOKEN_PATH", "/api/v1/chatbot/session-token")
+     CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID") or None
+@@ -132,9 +62,5 @@ class RagConfig:
+     CHUNK_SIZE_CHARS = int(os.getenv("CHUNK_SIZE_CHARS", "1200"))
+     CHUNK_OVERLAP_CHARS = int(os.getenv("CHUNK_OVERLAP_CHARS", "200"))
+ 
+-    # --- Sync state (SQLite, để cron chạy incremental) ---
+-    SYNC_DB_PATH = os.getenv("SYNC_DB_PATH", os.path.join(BASE_DIR, "sync_state.db"))
+-    MD_FILE_URL_FIELD = os.getenv("MD_FILE_URL_FIELD", "mdFileUrls")
+-
+ 
+ rag_config = RagConfig()
+\ No newline at end of file
+diff --git a/rag/domain/entities.py b/rag/domain/entities.py
+index 1acc8e7..15ce2da 100644
+--- a/rag/domain/entities.py
++++ b/rag/domain/entities.py
+@@ -33,20 +33,26 @@ class ArchiveRecord:
+     projects: list = field(default_factory=list)  # mỗi project có "name" + "fileUrls"
+     borrow_items: list = field(default_factory=list)
+ 
+-    def md_file_urls(self) -> list[tuple[str, str]]:
++    def markdown_documents(self) -> list[tuple[str, str, str]]:
+         """
+-        Trả về list (project_name, md_url) từ field cấu hình trong
+-        MD_FILE_URL_FIELD. Rỗng nếu backend chưa trả field này (API
+-        MD chưa tồn tại) — ingestion sẽ tự fallback sang PDF khi rỗng.
++        Trả về list (project_name, file_url, markdown_text) đọc TRỰC
++        TIẾP nội dung Markdown đã được API trả kèm sẵn trong
++        projects[].documents[].markdown (mảng các đoạn, thường theo
++        từng trang tài liệu gốc) — KHÔNG cần gọi download_file() qua
++        URL riêng nữa như trước. Rỗng nếu archive không có project/
++        document nào hoặc document không có nội dung markdown.
+         """
+-        from rag.config.rag_config import rag_config
+-        field_name = rag_config.MD_FILE_URL_FIELD
+-        pairs = []
++        results = []
+         for project in self.projects or []:
+             name = project.get("name", "")
+-            for url in project.get(field_name) or []:
+-                pairs.append((name, url))
+-        return pairs
++            for doc in project.get("documents") or []:
++                pages = doc.get("markdown") or []
++                text = "\n\n".join(p.strip() for p in pages if p and p.strip())
++                if not text:
++                    continue
++                file_url = doc.get("fileUrl") or doc.get("fileName") or ""
++                results.append((name, file_url, text))
++        return results
+ 
+ 
+ @dataclass
+diff --git a/rag/infrastructure/archive_api_client.py b/rag/infrastructure/archive_api_client.py
+index 7917ea7..53ac6c2 100644
+--- a/rag/infrastructure/archive_api_client.py
++++ b/rag/infrastructure/archive_api_client.py
+@@ -79,197 +79,3 @@ class HttpArchiveApiClient(ArchiveApiClientPort):
+ 
+         return records, is_last
+ 
+-    async def download_file(self, file_url: str) -> bytes:
+-        client = self._require_client()
+-        resp = await client.get(file_url, timeout=self._timeout)
+-        resp.raise_for_status()
+-        return resp.content
+-
+-# """
+-# infrastructure/archive_api_client.py — Adapter gọi Archive API.
+-#
+-# File này hỗ trợ 2 kiểu response:
+-#
+-# 1. API chính thức dạng danh sách archive:
+-#    {
+-#      "content": [...],
+-#      "last": true
+-#    }
+-#
+-# 2. API test preview 1 project:
+-#    {
+-#      "id": "...",
+-#      "name": "...",
+-#      "documents": [
+-#        {
+-#          "file_url": "...pdf",
+-#          "file_name": "..."
+-#        }
+-#      ]
+-#    }
+-# """
+-# from urllib.parse import urlparse, urlunparse
+-#
+-# import httpx
+-#
+-# from rag.config.rag_config import rag_config
+-# from rag.domain.entities import ArchiveRecord
+-# from rag.ports.interfaces import ArchiveApiClientPort
+-# from rag.logger import get_logger
+-#
+-# logger = get_logger(__name__)
+-#
+-#
+-# def _normalize_file_url(file_url: str | None) -> str | None:
+-#     """
+-#     API test có thể trả file_url dạng http://localhost:4000/...
+-#     Nếu chạy trong Docker hoặc máy khác, localhost sẽ trỏ sai chỗ.
+-#     Ta đổi localhost/127.0.0.1 sang host trong ARCHIVE_API_BASE_URL.
+-#     """
+-#     if not file_url:
+-#         return None
+-#
+-#     parsed = urlparse(file_url)
+-#
+-#     if not parsed.scheme:
+-#         return f"{rag_config.ARCHIVE_API_BASE_URL.rstrip('/')}/{file_url.lstrip('/')}"
+-#
+-#     if parsed.hostname not in {"localhost", "127.0.0.1"}:
+-#         return file_url
+-#
+-#     base = urlparse(rag_config.ARCHIVE_API_BASE_URL)
+-#     replaced = parsed._replace(scheme=base.scheme, netloc=base.netloc)
+-#     return urlunparse(replaced)
+-#
+-#
+-# def _normalize_projects(projects: list) -> list:
+-#     """Chuẩn hóa fileUrls trong projects của API chính thức."""
+-#     normalized = []
+-#
+-#     for project in projects or []:
+-#         item = dict(project)
+-#         item["fileUrls"] = [
+-#             url for url in (_normalize_file_url(u) for u in project.get("fileUrls") or []) if url
+-#         ]
+-#         normalized.append(item)
+-#
+-#     return normalized
+-#
+-#
+-# def _to_archive_record(raw: dict) -> ArchiveRecord:
+-#     """Convert response API chính thức thành ArchiveRecord."""
+-#     return ArchiveRecord(
+-#         id=raw["id"],
+-#         title=raw.get("title", ""),
+-#         arc_file_code=raw.get("arcFileCode"),
+-#         box_code=raw.get("boxCode"),
+-#         warehouse_name=raw.get("warehouseName"),
+-#         start_date=raw.get("startDate"),
+-#         end_date=raw.get("endDate"),
+-#         status=raw.get("status"),
+-#         updated_at=raw.get("updatedAt"),
+-#         staff_metadata=raw.get("staffMetadata") or [],
+-#         projects=_normalize_projects(raw.get("projects") or []),
+-#     )
+-#
+-#
+-# def _preview_to_archive_record(raw: dict) -> ArchiveRecord:
+-#     """Convert API test /api/v1/projects/preview/{id} thành ArchiveRecord."""
+-#     file_urls = []
+-#
+-#     for doc in raw.get("documents") or []:
+-#         file_url = _normalize_file_url(doc.get("file_url"))
+-#         if file_url:
+-#             file_urls.append(file_url)
+-#
+-#     fields_definition = raw.get("config", {}).get("fields_definition") or []
+-#     staff_metadata = [
+-#         {
+-#             "fieldName": field.get("name") or field.get("code"),
+-#             "value": field.get("example") or field.get("description") or "",
+-#             "code": field.get("code"),
+-#         }
+-#         for field in fields_definition
+-#     ]
+-#
+-#     title = raw.get("name") or raw.get("id") or ""
+-#
+-#     return ArchiveRecord(
+-#         id=raw["id"],
+-#         title=title,
+-#         arc_file_code=raw.get("id"),
+-#         box_code=None,
+-#         warehouse_name=None,
+-#         start_date=None,
+-#         end_date=None,
+-#         status=raw.get("status"),
+-#         updated_at=str(raw.get("updated_at") or raw.get("created_at") or ""),
+-#         staff_metadata=staff_metadata,
+-#         projects=[
+-#             {
+-#                 "name": title,
+-#                 "fileUrls": file_urls,
+-#             }
+-#         ],
+-#     )
+-#
+-#
+-# class HttpArchiveApiClient(ArchiveApiClientPort):
+-#     def __init__(self):
+-#         self._base_url = rag_config.ARCHIVE_API_BASE_URL.rstrip("/")
+-#         self._path = rag_config.ARCHIVE_API_PATH
+-#         self._timeout = rag_config.HTTP_TIMEOUT_SECONDS
+-#         self._client: httpx.AsyncClient | None = None
+-#
+-#     async def __aenter__(self):
+-#         self._client = httpx.AsyncClient()
+-#         return self
+-#
+-#     async def __aexit__(self, *exc):
+-#         if self._client:
+-#             await self._client.aclose()
+-#
+-#     def _require_client(self) -> httpx.AsyncClient:
+-#         if self._client is None:
+-#             raise RuntimeError(
+-#                 "HttpArchiveApiClient phải được dùng trong `async with` "
+-#                 "để quản lý vòng đời kết nối HTTP."
+-#             )
+-#         return self._client
+-#
+-#     async def fetch_page(self, page: int, page_size: int) -> tuple[list[ArchiveRecord], bool]:
+-#         client = self._require_client()
+-#         url = f"{self._base_url}{self._path}"
+-#
+-#         is_preview_endpoint = "/preview/" in self._path
+-#
+-#         if is_preview_endpoint and page > 0:
+-#             return [], True
+-#
+-#         params = None if is_preview_endpoint else {"page": page, "size": page_size}
+-#
+-#         resp = await client.get(url, params=params, timeout=self._timeout)
+-#         resp.raise_for_status()
+-#
+-#         data = resp.json()
+-#
+-#         # API chính thức: danh sách archive phân trang.
+-#         if isinstance(data, dict) and "content" in data:
+-#             records = [_to_archive_record(r) for r in data.get("content", [])]
+-#             is_last = bool(data.get("last", True))
+-#             return records, is_last
+-#
+-#         # API test: preview 1 project.
+-#         if isinstance(data, dict) and "documents" in data:
+-#             return [_preview_to_archive_record(data)], True
+-#
+-#         logger.warning(f"Response Archive API không đúng format mong đợi: {data}")
+-#         return [], True
+-#
+-#     async def download_file(self, file_url: str) -> bytes:
+-#         client = self._require_client()
+-#         normalized_url = _normalize_file_url(file_url)
+-#
+-#         resp = await client.get(normalized_url, timeout=self._timeout)
+-#         resp.raise_for_status()
+-#         return resp.content
+\ No newline at end of file
+diff --git a/rag/infrastructure/md_extractor.py b/rag/infrastructure/md_extractor.py
+index 5586f86..ab9a7b3 100644
+--- a/rag/infrastructure/md_extractor.py
++++ b/rag/infrastructure/md_extractor.py
+@@ -10,14 +10,9 @@ EXTRACTION_MD = "md"
+ 
+ class MdExtractor(FileExtractorPort):
+     def extract_and_chunk(
+-        self, archive_id: str, file_url: str, project_name: str, md_bytes: bytes
++        self, archive_id: str, file_url: str, project_name: str, text: str
+     ) -> list[DocumentChunk]:
+-        try:
+-            text = md_bytes.decode("utf-8").strip()
+-        except UnicodeDecodeError as e:
+-            logger.error(f"File MD không phải UTF-8 hợp lệ: {file_url} ({e})")
+-            return []
+-
++        text = (text or "").strip()
+         if not text:
+             return []
+ 
+diff --git a/rag/ports/interfaces.py b/rag/ports/interfaces.py
+index 49c5433..a11d615 100644
+--- a/rag/ports/interfaces.py
++++ b/rag/ports/interfaces.py
+@@ -29,17 +29,13 @@ class ArchiveApiClientPort(ABC):
+     async def fetch_page(self, page: int, page_size: int) -> tuple[list[ArchiveRecord], bool]:
+         """Trả về (danh_sach_archive_trong_trang, is_last_page)."""
+ 
+-    @abstractmethod
+-    async def download_file(self, file_url: str) -> bytes:
+-        """Tải nội dung file MD (bytes thô)."""
+-
+ 
+ class FileExtractorPort(ABC):
+-    """Trích xuất text từ file nguồn (hiện là Markdown) + chia chunk."""
++    """Chia nội dung Markdown (đã có sẵn dạng text) thành chunk."""
+ 
+     @abstractmethod
+     def extract_and_chunk(
+-        self, archive_id: str, file_url: str, project_name: str, file_bytes: bytes
++        self, archive_id: str, file_url: str, project_name: str, text: str
+     ) -> list[DocumentChunk]:
+         """Trả về danh sách DocumentChunk sẵn sàng để embed."""
+ 
+diff --git a/scripts/fake_archive_api_server.py b/scripts/fake_archive_api_server.py
+index 10ae2b6..5eba52c 100644
+--- a/scripts/fake_archive_api_server.py
++++ b/scripts/fake_archive_api_server.py
+@@ -21,25 +21,27 @@ CÁCH DÙNG:
+     4. Xong việc test thì đổi ARCHIVE_API_BASE_URL lại về API thật.
+ 
+ SERVER GIẢ LẬP 2 ENDPOINT:
+-    GET /api/public/archive?page=0&size=100
++    GET /api/public/archives?page=0&size=100
+         -> danh sách hồ sơ giả (JSON), đúng field mà
+            rag/infrastructure/archive_api_client.py._to_archive_record()
+-           đọc (title, arcFileCode, shelfCode, projects[].mdFileUrls...),
+-           có phân trang thật (page/totalPages) để test luôn vòng lặp
+-           while True trong IngestionService.run().
++           đọc (title, arcFileCode, shelfCode, projects[].documents[].markdown
++           — markdown đã nhúng SẴN dạng text, giống API thật, KHÔNG cần
++           tải file riêng), có phân trang thật (page/totalPages) để test
++           luôn vòng lặp while True trong IngestionService.run().
+ 
+     GET /files/<key>.md
+-        -> nội dung 1 file .md giả (bytes UTF-8), để test luôn
+-           MdExtractor (extract + chunk) và toàn bộ pipeline embed/upsert.
++        -> giữ lại để tiện xem thủ công nội dung MD giả trên trình
++           duyệt/Postman, nhưng ingestion KHÔNG còn gọi endpoint này
++           (đã đọc markdown trực tiếp từ documents[].markdown ở trên).
+ 
+ DATASET GIẢ gồm 6 hồ sơ, cố tình có nhiều case khác nhau:
+-    - archive-001: 1 file MD vừa đủ dài để bị chia thành nhiều chunk
++    - archive-001: 1 tài liệu MD vừa đủ dài để bị chia thành nhiều chunk
+       (CHUNK_SIZE_CHARS mặc định 1200).
+-    - archive-002: 1 file MD dài hơn nữa (nhiều chunk hơn).
+-    - archive-003: KHÔNG có project/mdFileUrls nào -> test case
+-      "archive không có file MD" (ingestion phải bỏ qua nội dung,
++    - archive-002: 1 tài liệu MD dài hơn nữa (nhiều chunk hơn).
++    - archive-003: KHÔNG có project/document nào -> test case
++      "archive không có nội dung MD" (ingestion phải bỏ qua nội dung,
+       chỉ upsert metadata, xem IngestionService._sync_one_archive).
+-    - archive-004: 1 file MD ngắn, chỉ ra đúng 1 chunk.
++    - archive-004: 1 tài liệu MD ngắn, chỉ ra đúng 1 chunk.
+     - archive-005: "Lý lịch quân nhân" đầy đủ (bản thân, gia đình, bảng
+       quá trình công tác, nhận xét, chữ ký) — dữ liệu HƯ CẤU, dùng để
+       test câu hỏi đóng (VD "sinh ngày nào", "quê quán ở đâu") xem
+@@ -143,8 +145,9 @@ FAKE_MD_FILES = {
+ 
+ 
+ def _build_archives(base_url: str) -> list[dict]:
+-    """base_url dạng http://host:port, dùng để build mdFileUrls tuyệt đối
+-    (download_file() gọi thẳng URL này, không ghép với ARCHIVE_API_BASE_URL)."""
++    """base_url dạng http://host:port, dùng để build fileUrl tuyệt đối
++    cho documents (chỉ để hiển thị/tham khảo, ingestion đọc markdown
++    trực tiếp từ documents[].markdown, không gọi URL này nữa)."""
+     return [
+         {
+             "id": "archive-001",
+@@ -164,7 +167,13 @@ def _build_archives(base_url: str) -> list[dict]:
+             "updatedAt": "2026-07-01T00:00:00Z",
+             "staffMetadata": [{"fieldName": "Người lập", "value": "Nguyễn Văn A"}],
+             "projects": [
+-                {"name": "Dự án 001", "mdFileUrls": [f"{base_url}/files/ho-so-001-doc1.md"]}
++                {"name": "Dự án 001", "documents": [
++                    {
++                        "fileName": "ho-so-001-doc1.md",
++                        "fileUrl": f"{base_url}/files/ho-so-001-doc1.md",
++                        "markdown": [FAKE_MD_FILES["ho-so-001-doc1"]],
++                    }
++                ]}
+             ],
+             "borrowItems": [],
+         },
+@@ -186,7 +195,13 @@ def _build_archives(base_url: str) -> list[dict]:
+             "updatedAt": "2026-07-02T00:00:00Z",
+             "staffMetadata": [{"fieldName": "Người lập", "value": "Trần Thị B"}],
+             "projects": [
+-                {"name": "Dự án 002", "mdFileUrls": [f"{base_url}/files/ho-so-002-doc1.md"]}
++                {"name": "Dự án 002", "documents": [
++                    {
++                        "fileName": "ho-so-002-doc1.md",
++                        "fileUrl": f"{base_url}/files/ho-so-002-doc1.md",
++                        "markdown": [FAKE_MD_FILES["ho-so-002-doc1"]],
++                    }
++                ]}
+             ],
+             "borrowItems": [],
+         },
+@@ -201,7 +216,7 @@ def _build_archives(base_url: str) -> list[dict]:
+             "startDate": "2022-01-01",
+             "endDate": "2022-12-31",
+             "status": "ACTIVE",
+-            "description": "Test case: archive KHÔNG có mdFileUrls -> ingestion phải bỏ qua nội dung, chỉ upsert metadata",
++            "description": "Test case: archive KHÔNG có project/document nào -> ingestion phải bỏ qua nội dung, chỉ upsert metadata",
+             "totalDoc": 0,
+             "language": "vi",
+             "maintenance": "NONE",
+@@ -228,7 +243,13 @@ def _build_archives(base_url: str) -> list[dict]:
+             "updatedAt": "2026-07-04T00:00:00Z",
+             "staffMetadata": [{"fieldName": "Người lập", "value": "Lê Văn C"}],
+             "projects": [
+-                {"name": "Dự án 004", "mdFileUrls": [f"{base_url}/files/ho-so-004-doc1.md"]}
++                {"name": "Dự án 004", "documents": [
++                    {
++                        "fileName": "ho-so-004-doc1.md",
++                        "fileUrl": f"{base_url}/files/ho-so-004-doc1.md",
++                        "markdown": [FAKE_MD_FILES["ho-so-004-doc1"]],
++                    }
++                ]}
+             ],
+             "borrowItems": [],
+         },
+@@ -250,7 +271,13 @@ def _build_archives(base_url: str) -> list[dict]:
+             "updatedAt": "2026-07-05T00:00:00Z",
+             "staffMetadata": [{"fieldName": "Người lập", "value": "Test Data"}],
+             "projects": [
+-                {"name": "Lý lịch Test01", "mdFileUrls": [f"{base_url}/files/ho-so-005-doc1.md"]}
++                {"name": "Lý lịch Test01", "documents": [
++                    {
++                        "fileName": "ho-so-005-doc1.md",
++                        "fileUrl": f"{base_url}/files/ho-so-005-doc1.md",
++                        "markdown": [FAKE_MD_FILES["ho-so-005-doc1"]],
++                    }
++                ]}
+             ],
+             "borrowItems": [],
+         },
+@@ -272,7 +299,13 @@ def _build_archives(base_url: str) -> list[dict]:
+             "updatedAt": "2026-07-06T00:00:00Z",
+             "staffMetadata": [{"fieldName": "Người lập", "value": "Test Data"}],
+             "projects": [
+-                {"name": "Khen thưởng Test02", "mdFileUrls": [f"{base_url}/files/ho-so-006-doc1.md"]}
++                {"name": "Khen thưởng Test02", "documents": [
++                    {
++                        "fileName": "ho-so-006-doc1.md",
++                        "fileUrl": f"{base_url}/files/ho-so-006-doc1.md",
++                        "markdown": [FAKE_MD_FILES["ho-so-006-doc1"]],
++                    }
++                ]}
+             ],
+             "borrowItems": [],
+         },
+diff --git a/scripts/test_closed_questions.py b/scripts/test_closed_questions.py
+index 5fd71f5..fd17889 100644
+--- a/scripts/test_closed_questions.py
++++ b/scripts/test_closed_questions.py
+@@ -50,20 +50,19 @@ async def main():
+         archives, _ = await client.fetch_page(0, 100)
+         by_id = {a.id: a for a in archives}
+ 
+-        # Chunk sẵn từng archive liên quan, tránh tải/chunk lại nhiều lần.
++        # Chunk sẵn từng archive liên quan, tránh chunk lại nhiều lần.
+         chunks_by_archive: dict[str, list[str]] = {}
+         for archive_id in {q[0] for q in CLOSED_QUESTIONS}:
+             archive = by_id.get(archive_id)
+             if archive is None:
+                 print(f"[BỎ QUA] Không tìm thấy archive_id={archive_id} trong fake API")
+                 continue
+-            md_urls = archive.md_file_urls()
+-            if not md_urls:
+-                print(f"[BỎ QUA] {archive_id} không có file MD")
++            markdown_docs = archive.markdown_documents()
++            if not markdown_docs:
++                print(f"[BỎ QUA] {archive_id} không có nội dung Markdown")
+                 continue
+-            project_name, file_url = md_urls[0]
+-            file_bytes = await client.download_file(file_url)
+-            chunks = extractor.extract_and_chunk(archive_id, file_url, project_name, file_bytes)
++            project_name, file_url, text = markdown_docs[0]
++            chunks = extractor.extract_and_chunk(archive_id, file_url, project_name, text)
+             chunks_by_archive[archive_id] = [c.text for c in chunks]
+             print(f"[INFO] {archive_id}: chia thành {len(chunks)} chunk "
+                   f"(độ dài: {[len(t) for t in chunks_by_archive[archive_id]]})")

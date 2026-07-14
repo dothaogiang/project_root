@@ -50,20 +50,19 @@ async def main():
         archives, _ = await client.fetch_page(0, 100)
         by_id = {a.id: a for a in archives}
 
-        # Chunk sẵn từng archive liên quan, tránh tải/chunk lại nhiều lần.
+        # Chunk sẵn từng archive liên quan, tránh chunk lại nhiều lần.
         chunks_by_archive: dict[str, list[str]] = {}
         for archive_id in {q[0] for q in CLOSED_QUESTIONS}:
             archive = by_id.get(archive_id)
             if archive is None:
                 print(f"[BỎ QUA] Không tìm thấy archive_id={archive_id} trong fake API")
                 continue
-            md_urls = archive.md_file_urls()
-            if not md_urls:
-                print(f"[BỎ QUA] {archive_id} không có file MD")
+            markdown_docs = archive.markdown_documents()
+            if not markdown_docs:
+                print(f"[BỎ QUA] {archive_id} không có nội dung Markdown")
                 continue
-            project_name, file_url = md_urls[0]
-            file_bytes = await client.download_file(file_url)
-            chunks = extractor.extract_and_chunk(archive_id, file_url, project_name, file_bytes)
+            project_name, file_url, text = markdown_docs[0]
+            chunks = extractor.extract_and_chunk(archive_id, file_url, project_name, text)
             chunks_by_archive[archive_id] = [c.text for c in chunks]
             print(f"[INFO] {archive_id}: chia thành {len(chunks)} chunk "
                   f"(độ dài: {[len(t) for t in chunks_by_archive[archive_id]]})")

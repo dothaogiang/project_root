@@ -1,0 +1,67 @@
+diff a/rag/application/ingestion_service.py b/rag/application/ingestion_service.py	(rejected hunks)
+@@ -55,14 +55,14 @@ class IngestionService:
+         embedder: EmbeddingProviderPort,
+         vector_store: VectorStorePort,
+         page_size: int = 100,
+-        download_concurrency: int = 4,
++        sync_concurrency: int = 4,
+     ):
+         self._archive_api = archive_api
+         self._md_extractor = md_extractor
+         self._embedder = embedder
+         self._vector_store = vector_store
+         self._page_size = page_size
+-        self._download_semaphore = asyncio.Semaphore(download_concurrency)
++        self._sync_semaphore = asyncio.Semaphore(sync_concurrency)
+ 
+     async def run(self) -> None:
+         self._vector_store.ensure_collections()
+@@ -89,36 +89,29 @@ class IngestionService:
+     async def _sync_one_archive(self, archive: ArchiveRecord) -> None:
+         await self._sync_archive_metadata(archive)
+ 
+-        md_urls = archive.md_file_urls()
+-        if not md_urls:
+-            logger.info(f"Archive {archive.id}: không có file MD, bỏ qua nội dung chi tiết")
++        markdown_docs = archive.markdown_documents()
++        if not markdown_docs:
++            logger.info(f"Archive {archive.id}: không có nội dung Markdown, bỏ qua nội dung chi tiết")
+             return
+ 
+-        for project_name, file_url in md_urls:
+-            await self._sync_file(archive, project_name, file_url)
++        for project_name, file_url, text in markdown_docs:
++            await self._sync_file(archive, project_name, file_url, text)
+ 
+     async def _sync_archive_metadata(self, archive: ArchiveRecord) -> None:
+         search_text = _build_archive_search_text(archive)
+         embedding = self._embedder.embed_text(search_text)
+         self._vector_store.upsert_archive(archive, embedding)
+ 
+-    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str) -> None:
+-        async with self._download_semaphore:
+-            try:
+-                file_bytes = await self._archive_api.download_file(file_url)
+-            except Exception as e:
+-                logger.error(f"Không tải được file {file_url}: {e}")
+-                return
+-
+-            logger.info(f"Đang extract: {file_url}")
+-            chunks = self._md_extractor.extract_and_chunk(archive.id, file_url, project_name, file_bytes)
++    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str, text: str) -> None:
++        async with self._sync_semaphore:
++            chunks = self._md_extractor.extract_and_chunk(archive.id, file_url, project_name, text)
+ 
+             if not chunks:
+-                logger.warning(f"Không trích được text từ: {file_url}")
++                logger.warning(f"Không trích được text từ: {file_url or project_name}")
+                 return
+ 
+             embeddings = self._embedder.embed_batch([c.text for c in chunks])
+             self._vector_store.delete_chunks_by_file(archive.id, file_url)
+             self._vector_store.upsert_chunks(chunks, embeddings)
+ 
+-            logger.info(f"Đã đồng bộ {len(chunks)} chunk từ: {file_url}")
+\ No newline at end of file
++            logger.info(f"Đã đồng bộ {len(chunks)} chunk từ: {file_url or project_name}")
+\ No newline at end of file

@@ -1,0 +1,18 @@
+diff a/rag/infrastructure/md_extractor.py b/rag/infrastructure/md_extractor.py	(rejected hunks)
+@@ -10,14 +10,9 @@ EXTRACTION_MD = "md"
+ 
+ class MdExtractor(FileExtractorPort):
+     def extract_and_chunk(
+-        self, archive_id: str, file_url: str, project_name: str, md_bytes: bytes
++        self, archive_id: str, file_url: str, project_name: str, text: str
+     ) -> list[DocumentChunk]:
+-        try:
+-            text = md_bytes.decode("utf-8").strip()
+-        except UnicodeDecodeError as e:
+-            logger.error(f"File MD không phải UTF-8 hợp lệ: {file_url} ({e})")
+-            return []
+-
++        text = (text or "").strip()
+         if not text:
+             return []
+ 

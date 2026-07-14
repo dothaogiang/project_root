@@ -24,17 +24,16 @@ Hệ thống expose **6 tool MCP**, chia làm 2 nhóm khác bản chất:
 **Nhóm B — Live query trực tiếp vào Public Archive API** (không qua
 Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
 
-- `search_archives` — tìm hồ sơ theo field lọc chính xác (status, kho, ngôn ngữ, khoảng ngày...)
-- `get_archive_detail` — lấy toàn bộ chi tiết 1 hồ sơ theo UUID (metadata, project, lịch sử mượn)
-- `get_staff_archive_metadata` — lấy cấu trúc/schema của hồ sơ cán bộ
-- `get_file_proxy` — lấy nội dung file gốc (MD, ảnh...) đính kèm hồ sơ
+- `search_archives` — tìm hồ sơ theo `keywords` (mảng, 1+ biến thể từ
+  khóa gộp trong 1 lượt gọi) + field lọc chính xác (status, kho, ngôn
+  ngữ, khoảng ngày...). Response đã kèm sẵn Markdown đầy đủ của tài
+  liệu trong `content[].projects[].documents[].markdown` — không cần
+  tool "detail" riêng để lấy nội dung.
 
 Quy tắc chọn tool cho chatbot: chưa biết `archive_id` → luôn
-`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; đã
-biết `archive_id` mà cần chi tiết đầy đủ (kể cả lịch sử mượn) →
-`get_archive_detail`; cần hỏi sâu nội dung file MD → `get_profile_detail`;
-cần schema hồ sơ cán bộ → `get_staff_archive_metadata`; cần xem/tải
-file → `get_file_proxy`.
+`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; cần
+hỏi sâu/tìm mờ theo nghĩa trong nội dung → `get_profile_detail` /
+`find_profile_and_answer` / `search_content`.
 
 ## Cấu trúc dự án
 
@@ -47,7 +46,7 @@ project_root/
 │   │   ├── server.py             # Entry point, chạy MCP server (streamable-http)
 │   │   ├── feature_manager.py    # Nơi định nghĩa method cho từng tool (khớp tên với tools.yaml)
 │   │   ├── archive_api/          # Client LIVE query trực tiếp Public Archive API (nhóm B)
-│   │   │   ├── client.py         #   search_archives, get_archive_detail, get_staff_archive_metadata, get_file_proxy
+│   │   │   ├── client.py         #   search_archives (nhận keywords: list[str], fan-out + gộp kết quả)
 │   │   │   └── token_manager.py  #   Quản lý X-Chatbot-Token (cache + auto refresh khi 401)
 │   │   ├── logger.py
 │   │   ├── config/configs.py     # Cấu hình riêng của MCP (port, resources dir, archive API paths, token...)

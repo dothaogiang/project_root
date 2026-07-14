@@ -128,13 +128,23 @@ tools:
       (semantic) trên dữ liệu đã đánh index. Không cần gọi tool nào
       khác để "tìm theo nghĩa" — cứ gọi tool này. Response có field
       "search_mode": "keyword" hoặc "semantic_fallback" để biết kết quả
-      đến từ nguồn nào.
+      đến từ nguồn nào. Kết quả trả về đã kèm sẵn nội dung Markdown đầy
+      đủ của tài liệu (nếu có) trong content[].projects[].documents[].markdown
+      — không cần gọi thêm tool nào khác để lấy nội dung chi tiết.
     inputSchema:
       type: object
       properties:
-        keyword:
-          type: string
-          description: "Từ khóa tìm trong tiêu đề, mã hồ sơ (arcFileCode), hoặc mã hộp (boxCode)."
+        keywords:
+          type: array
+          items:
+            type: string
+          description: >
+            1 hoặc nhiều biến thể từ khóa cần tìm trong tiêu đề, mã hồ
+            sơ (arcFileCode), hoặc mã hộp (boxCode) — VD tên có dấu +
+            không dấu + viết tắt của cùng 1 người. Truyền TẤT CẢ biến
+            thể nghi ngờ vào 1 mảng trong 1 lần gọi tool này (tool tự
+            gộp kết quả), KHÔNG tự gọi lại tool nhiều lần cho từng
+            biến thể riêng lẻ.
         status:
           type: string
           description: "Lọc theo trạng thái hồ sơ."

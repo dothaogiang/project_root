@@ -4,8 +4,7 @@ Cấu hình của riêng MCP server (folder mcp/).
 Gồm 2 nhóm:
   1. Cấu hình khởi động server (SERVER_NAME, PORT_SERVER, RESOURCES_DIR)
   2. Cấu hình cho archive_api/ — client gọi TRỰC TIẾP (live) Public
-     Archive API để phục vụ 4 tool: search_archives, get_archive_detail,
-     get_staff_archive_metadata, get_file_proxy.
+     Archive API để phục vụ tool search_archives.
 
 KHÔNG chứa cấu hình pipeline RAG (Qdrant, embedding, OCR, chunking,
 sync state) — phần đó nằm trong rag/config/rag_config.py, vì đó là
@@ -37,8 +36,6 @@ class Config:
     # --- Public Archive API (live query, dùng bởi archive_api/client.py) ---
     ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.46:4000")
     ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archives")
-    ARCHIVE_DETAIL_PATH = os.getenv("ARCHIVE_DETAIL_PATH", "/api/public/archives/{id}")
-    STAFF_ARCHIVE_PATH = os.getenv("STAFF_ARCHIVE_PATH", "/api/public/staff-archive")
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 
     AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").lower() == "true"

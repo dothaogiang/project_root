@@ -29,17 +29,13 @@ class ArchiveApiClientPort(ABC):
     async def fetch_page(self, page: int, page_size: int) -> tuple[list[ArchiveRecord], bool]:
         """Trả về (danh_sach_archive_trong_trang, is_last_page)."""
 
-    @abstractmethod
-    async def download_file(self, file_url: str) -> bytes:
-        """Tải nội dung file MD (bytes thô)."""
-
 
 class FileExtractorPort(ABC):
-    """Trích xuất text từ file nguồn (hiện là Markdown) + chia chunk."""
+    """Chia nội dung Markdown (đã có sẵn dạng text) thành chunk."""
 
     @abstractmethod
     def extract_and_chunk(
-        self, archive_id: str, file_url: str, project_name: str, file_bytes: bytes
+        self, archive_id: str, file_url: str, project_name: str, text: str
     ) -> list[DocumentChunk]:
         """Trả về danh sách DocumentChunk sẵn sàng để embed."""
 

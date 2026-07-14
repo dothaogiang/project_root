@@ -21,25 +21,27 @@ CÁCH DÙNG:
     4. Xong việc test thì đổi ARCHIVE_API_BASE_URL lại về API thật.
 
 SERVER GIẢ LẬP 2 ENDPOINT:
-    GET /api/public/archive?page=0&size=100
+    GET /api/public/archives?page=0&size=100
         -> danh sách hồ sơ giả (JSON), đúng field mà
            rag/infrastructure/archive_api_client.py._to_archive_record()
-           đọc (title, arcFileCode, shelfCode, projects[].mdFileUrls...),
-           có phân trang thật (page/totalPages) để test luôn vòng lặp
-           while True trong IngestionService.run().
+           đọc (title, arcFileCode, shelfCode, projects[].documents[].markdown
+           — markdown đã nhúng SẴN dạng text, giống API thật, KHÔNG cần
+           tải file riêng), có phân trang thật (page/totalPages) để test
+           luôn vòng lặp while True trong IngestionService.run().
 
     GET /files/<key>.md
-        -> nội dung 1 file .md giả (bytes UTF-8), để test luôn
-           MdExtractor (extract + chunk) và toàn bộ pipeline embed/upsert.
+        -> giữ lại để tiện xem thủ công nội dung MD giả trên trình
+           duyệt/Postman, nhưng ingestion KHÔNG còn gọi endpoint này
+           (đã đọc markdown trực tiếp từ documents[].markdown ở trên).
 
 DATASET GIẢ gồm 6 hồ sơ, cố tình có nhiều case khác nhau:
-    - archive-001: 1 file MD vừa đủ dài để bị chia thành nhiều chunk
+    - archive-001: 1 tài liệu MD vừa đủ dài để bị chia thành nhiều chunk
       (CHUNK_SIZE_CHARS mặc định 1200).
-    - archive-002: 1 file MD dài hơn nữa (nhiều chunk hơn).
-    - archive-003: KHÔNG có project/mdFileUrls nào -> test case
-      "archive không có file MD" (ingestion phải bỏ qua nội dung,
+    - archive-002: 1 tài liệu MD dài hơn nữa (nhiều chunk hơn).
+    - archive-003: KHÔNG có project/document nào -> test case
+      "archive không có nội dung MD" (ingestion phải bỏ qua nội dung,
       chỉ upsert metadata, xem IngestionService._sync_one_archive).
-    - archive-004: 1 file MD ngắn, chỉ ra đúng 1 chunk.
+    - archive-004: 1 tài liệu MD ngắn, chỉ ra đúng 1 chunk.
     - archive-005: "Lý lịch quân nhân" đầy đủ (bản thân, gia đình, bảng
       quá trình công tác, nhận xét, chữ ký) — dữ liệu HƯ CẤU, dùng để
       test câu hỏi đóng (VD "sinh ngày nào", "quê quán ở đâu") xem
@@ -143,8 +145,9 @@ FAKE_MD_FILES = {
 
 
 def _build_archives(base_url: str) -> list[dict]:
-    """base_url dạng http://host:port, dùng để build mdFileUrls tuyệt đối
-    (download_file() gọi thẳng URL này, không ghép với ARCHIVE_API_BASE_URL)."""
+    """base_url dạng http://host:port, dùng để build fileUrl tuyệt đối
+    cho documents (chỉ để hiển thị/tham khảo, ingestion đọc markdown
+    trực tiếp từ documents[].markdown, không gọi URL này nữa)."""
     return [
         {
             "id": "archive-001",
@@ -164,7 +167,13 @@ def _build_archives(base_url: str) -> list[dict]:
             "updatedAt": "2026-07-01T00:00:00Z",
             "staffMetadata": [{"fieldName": "Người lập", "value": "Nguyễn Văn A"}],
             "projects": [
-                {"name": "Dự án 001", "mdFileUrls": [f"{base_url}/files/ho-so-001-doc1.md"]}
+                {"name": "Dự án 001", "documents": [
+                    {
+                        "fileName": "ho-so-001-doc1.md",
+                        "fileUrl": f"{base_url}/files/ho-so-001-doc1.md",
+                        "markdown": [FAKE_MD_FILES["ho-so-001-doc1"]],
+                    }
+                ]}
             ],
             "borrowItems": [],
         },
@@ -186,7 +195,13 @@ def _build_archives(base_url: str) -> list[dict]:
             "updatedAt": "2026-07-02T00:00:00Z",
             "staffMetadata": [{"fieldName": "Người lập", "value": "Trần Thị B"}],
             "projects": [
-                {"name": "Dự án 002", "mdFileUrls": [f"{base_url}/files/ho-so-002-doc1.md"]}
+                {"name": "Dự án 002", "documents": [
+                    {
+                        "fileName": "ho-so-002-doc1.md",
+                        "fileUrl": f"{base_url}/files/ho-so-002-doc1.md",
+                        "markdown": [FAKE_MD_FILES["ho-so-002-doc1"]],
+                    }
+                ]}
             ],
             "borrowItems": [],
         },
@@ -201,7 +216,7 @@ def _build_archives(base_url: str) -> list[dict]:
             "startDate": "2022-01-01",
             "endDate": "2022-12-31",
             "status": "ACTIVE",
-            "description": "Test case: archive KHÔNG có mdFileUrls -> ingestion phải bỏ qua nội dung, chỉ upsert metadata",
+            "description": "Test case: archive KHÔNG có project/document nào -> ingestion phải bỏ qua nội dung, chỉ upsert metadata",
             "totalDoc": 0,
             "language": "vi",
             "maintenance": "NONE",
@@ -228,7 +243,13 @@ def _build_archives(base_url: str) -> list[dict]:
             "updatedAt": "2026-07-04T00:00:00Z",
             "staffMetadata": [{"fieldName": "Người lập", "value": "Lê Văn C"}],
             "projects": [
-                {"name": "Dự án 004", "mdFileUrls": [f"{base_url}/files/ho-so-004-doc1.md"]}
+                {"name": "Dự án 004", "documents": [
+                    {
+                        "fileName": "ho-so-004-doc1.md",
+                        "fileUrl": f"{base_url}/files/ho-so-004-doc1.md",
+                        "markdown": [FAKE_MD_FILES["ho-so-004-doc1"]],
+                    }
+                ]}
             ],
             "borrowItems": [],
         },
@@ -250,7 +271,13 @@ def _build_archives(base_url: str) -> list[dict]:
             "updatedAt": "2026-07-05T00:00:00Z",
             "staffMetadata": [{"fieldName": "Người lập", "value": "Test Data"}],
             "projects": [
-                {"name": "Lý lịch Test01", "mdFileUrls": [f"{base_url}/files/ho-so-005-doc1.md"]}
+                {"name": "Lý lịch Test01", "documents": [
+                    {
+                        "fileName": "ho-so-005-doc1.md",
+                        "fileUrl": f"{base_url}/files/ho-so-005-doc1.md",
+                        "markdown": [FAKE_MD_FILES["ho-so-005-doc1"]],
+                    }
+                ]}
             ],
             "borrowItems": [],
         },
@@ -272,7 +299,13 @@ def _build_archives(base_url: str) -> list[dict]:
             "updatedAt": "2026-07-06T00:00:00Z",
             "staffMetadata": [{"fieldName": "Người lập", "value": "Test Data"}],
             "projects": [
-                {"name": "Khen thưởng Test02", "mdFileUrls": [f"{base_url}/files/ho-so-006-doc1.md"]}
+                {"name": "Khen thưởng Test02", "documents": [
+                    {
+                        "fileName": "ho-so-006-doc1.md",
+                        "fileUrl": f"{base_url}/files/ho-so-006-doc1.md",
+                        "markdown": [FAKE_MD_FILES["ho-so-006-doc1"]],
+                    }
+                ]}
             ],
             "borrowItems": [],
         },
