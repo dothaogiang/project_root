@@ -15,10 +15,13 @@ này không cần gọi thêm endpoint "detail" nào khác để lấy nội dun
 Cố ý đặt trong mcp/ (không phải rag/) vì đây không phải logic
 embedding/vector — mcp/ sở hữu tích hợp trực tiếp này để phục vụ đúng
 tool của nó, giữ rag/ chỉ tập trung vào ingestion + semantic retrieval
-(dùng cho tìm mờ/ngữ nghĩa qua search_profile/get_profile_detail/
-find_profile_and_answer/search_content).
+(dùng cho fallback semantic của search_archives, và các tool
+get_profile_detail/find_profile_and_answer/search_content khi cần hỏi
+sâu vào nội dung 1 hồ sơ cụ thể).
 """
 import asyncio
+import re
+from datetime import date
 from typing import Any, Optional
 
 import httpx
@@ -28,6 +31,41 @@ from config.configs import config_object
 from logger import get_logger
 
 logger = get_logger(__name__)
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_iso_date(field_name: str, value: Optional[str]) -> None:
+    """
+    Chặn sớm các giá trị ngày sai định dạng (VD chỉ có năm "2022",
+    hoặc "2022/01/01") TRƯỚC KHI gửi lên Public Archive API.
+
+    LƯU Ý: nếu backend Archive API thật ra cần format DD/MM/YYYY (khớp
+    startDate/endDate nó tự trả ra) thay vì ISO YYYY-MM-DD, đổi lại
+    _ISO_DATE_RE + cách parse bên dưới cho phù hợp.
+
+    Lý do cần bước này: API thật không validate input tử tế — gửi
+    ngày sai định dạng khiến nó crash và trả về lỗi 500 chung chung
+    (Internal Server Error) thay vì 400 Bad Request rõ ràng, rất khó
+    debug cho bên gọi (LLM/chatbot). Validate ở đây để LLM nhận ngay
+    thông báo lỗi dễ hiểu và có thể tự sửa lại tham số ở lượt gọi sau,
+    thay vì nhận traceback 500 khó hiểu từ 1 hệ thống khác.
+    """
+    if value is None:
+        return
+    if not _ISO_DATE_RE.match(value):
+        raise ValueError(
+            f"Tham số '{field_name}' = {value!r} sai định dạng. "
+            "Phải là ngày ĐẦY ĐỦ dạng YYYY-MM-DD (VD 2022-01-01), "
+            "không được chỉ gửi năm hoặc dùng dấu '/'."
+        )
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(
+            f"Tham số '{field_name}' = {value!r} không phải ngày hợp lệ "
+            "(VD tháng/ngày ngoài phạm vi cho phép)."
+        )
 
 
 class ArchiveApiClient:
@@ -84,6 +122,11 @@ class ArchiveApiClient:
         về. Với 1 keyword (hoặc không có), chỉ tốn đúng 1 request như
         trước, không phát sinh thêm overhead.
         """
+        _validate_iso_date("created_from", created_from)
+        _validate_iso_date("created_to", created_to)
+        _validate_iso_date("updated_from", updated_from)
+        _validate_iso_date("updated_to", updated_to)
+
         base_params = {
             "status": status,
             "warehouseId": warehouse_id,

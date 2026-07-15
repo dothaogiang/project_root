@@ -1,9 +1,10 @@
 # Profile Lookup — MCP Server + RAG Pipeline
 
 Hệ thống tra cứu hồ sơ lưu trữ (archive) qua chatbot, dùng chuẩn **MCP
-(Model Context Protocol)** để expose 2 tool cho LLM/chatbot gọi:
-`search_profile` (tìm hồ sơ theo từ khóa) và `get_profile_detail` (hỏi
-sâu nội dung file Markdown bên trong 1 hồ sơ cụ thể).
+(Model Context Protocol)** để expose các tool cho LLM/chatbot gọi:
+`search_archives` (tìm hồ sơ — tự khớp chính xác rồi fallback semantic)
+và `get_profile_detail` (hỏi sâu nội dung file Markdown bên trong 1 hồ
+sơ cụ thể).
 
 Dữ liệu hồ sơ (metadata + file MD) được lấy về từ Public Archive API
 nội bộ, trích xuất text, embed rồi lưu vào Qdrant để phục vụ tìm kiếm
@@ -13,27 +14,40 @@ cron/lịch chạy tự động.
 
 ## Dự án làm gì
 
-Hệ thống expose **6 tool MCP**, chia làm 2 nhóm khác bản chất:
+Hệ thống expose **4 tool MCP**, chia làm 2 nhóm khác bản chất:
 
-**Nhóm A — Semantic search qua Qdrant** (dữ liệu đã ingest sẵn, xem
-`rag/`):
-
-- `search_profile` — tìm hồ sơ bằng hybrid search (semantic + từ khóa)
-- `get_profile_detail` — hỏi sâu nội dung file MD bên trong 1 hồ sơ
-
-**Nhóm B — Live query trực tiếp vào Public Archive API** (không qua
+**Nhóm A — Live query trực tiếp vào Public Archive API** (không qua
 Qdrant, có xác thực `X-Chatbot-Token`, xem `mcp/src/archive_api/`):
 
-- `search_archives` — tìm hồ sơ theo `keywords` (mảng, 1+ biến thể từ
-  khóa gộp trong 1 lượt gọi) + field lọc chính xác (status, kho, ngôn
-  ngữ, khoảng ngày...). Response đã kèm sẵn Markdown đầy đủ của tài
-  liệu trong `content[].projects[].documents[].markdown` — không cần
-  tool "detail" riêng để lấy nội dung.
+- `search_archives` — tool DUY NHẤT để TÌM hồ sơ. Nhận `keywords`
+  (mảng, 1+ biến thể từ khóa gộp trong 1 lượt gọi) + field lọc chính
+  xác (status, kho, ngôn ngữ, khoảng ngày...). Tự thử khớp chính xác
+  trước, chỉ khi không có kết quả nào mới tự fallback sang semantic
+  search trên dữ liệu đã index (field `search_mode` cho biết nguồn kết
+  quả). Response đã kèm sẵn Markdown đầy đủ của tài liệu trong
+  `content[].projects[].documents[].markdown` khi khớp chính xác —
+  không cần tool "detail" riêng để lấy nội dung trong trường hợp đó.
 
-Quy tắc chọn tool cho chatbot: chưa biết `archive_id` → luôn
-`search_archives` (hoặc `search_profile` nếu muốn semantic) trước; cần
-hỏi sâu/tìm mờ theo nghĩa trong nội dung → `get_profile_detail` /
-`find_profile_and_answer` / `search_content`.
+**Nhóm B — Semantic search qua Qdrant** (dữ liệu đã ingest sẵn, dùng
+khi đã có `archive_id`/`key` cụ thể cần hỏi sâu, hoặc câu hỏi có thể
+khớp nhiều hồ sơ, xem `rag/`):
+
+- `get_profile_detail` — hỏi sâu nội dung file MD bên trong 1 hồ sơ ĐÃ
+  biết `archive_id`.
+- `find_profile_and_answer` — gộp "tìm hồ sơ theo `key`" + "trả lời
+  trong hồ sơ đó" khi CHƯA biết `archive_id`.
+- `search_content` — tìm nội dung xuyên suốt TẤT CẢ hồ sơ đã ingest,
+  không giới hạn 1 hồ sơ cụ thể.
+
+Quy tắc chọn tool cho chatbot: chưa biết `archive_id` và cần TÌM hồ sơ
+→ luôn `search_archives` trước (đã tự fallback semantic, không cần tool
+riêng nào khác để tìm); cần hỏi sâu/tìm mờ theo nghĩa trong NỘI DUNG →
+`get_profile_detail` / `find_profile_and_answer` / `search_content`.
+
+> Trước đây có thêm tool `search_profile` (semantic search hồ sơ theo
+> metadata) tách riêng, nhưng đã gộp vào nhánh fallback semantic của
+> `search_archives` để tránh 2 tool cùng làm 1 việc "tìm hồ sơ", gây
+> nhầm lẫn khi LLM chọn tool.
 
 ## Cấu trúc dự án
 
@@ -176,15 +190,16 @@ với `transport="streamable-http"`).
 **Cách nhanh nhất (Postman ≥ v11 có sẵn MCP request):**
 
 1. New → **MCP Request** → URL `http://localhost:8090/mcp`, transport **Streamable HTTP** → Connect.
-2. Postman tự liệt kê 2 tool `search_profile`, `get_profile_detail` kèm form nhập tham số.
+2. Postman tự liệt kê 4 tool `search_archives`, `get_profile_detail`,
+   `find_profile_and_answer`, `search_content` kèm form nhập tham số.
 3. Chọn tool, điền tham số, Run, xem kết quả.
 
 **Cách thủ công (JSON-RPC qua POST, header `Content-Type: application/json` + `Accept: application/json, text/event-stream`):**
 
 1. `initialize` → lấy `Mcp-Session-Id` ở response header, dùng cho mọi request sau.
 2. `notifications/initialized`.
-3. `tools/list` → xác nhận có đúng 2 tool.
-4. `tools/call` với `name: "search_profile"`, `arguments: {"keyword": "..."}`.
+3. `tools/list` → xác nhận có đúng 4 tool.
+4. `tools/call` với `name: "search_archives"`, `arguments: {"keywords": ["..."]}`.
 5. `tools/call` với `name: "get_profile_detail"`, `arguments: {"archive_id": "...", "question": "..."}`.
 
 ## Xử lý sự cố thường gặp
@@ -194,9 +209,9 @@ với `transport="streamable-http"`).
 | `pip` báo dependency conflict (obspy, torchvision...)                    | Đang cài vào env chung với project khác                  | Tạo venv mới sạch, không dùng chung env                                                                 |
 | `httpx.ConnectError: All connection attempts failed` khi chạy `sync_job` | Không kết nối được `ARCHIVE_API_BASE_URL` (sai mạng/VPN) | `Invoke-WebRequest` thử gọi thẳng URL đó                                                                |
 | `Model ... is not supported in TextEmbedding`                            | Bản `fastembed` đang cài không có model đó               | `TextEmbedding.list_supported_models()` để xem model nào khả dụng, đổi `DENSE_MODEL_NAME` trong `.env`  |
-| `search_profile` trả về quá nhiều hồ sơ không liên quan                  | Bản chất vector search luôn trả top-K dù không liên quan | Đã có lọc score-gap trong `retrieval_service.py`; điều chỉnh `score_gap_ratio` nếu cần lọc gắt/lỏng hơn |
+| `search_archives` (nhánh `semantic_fallback`) trả về quá nhiều hồ sơ không liên quan | Bản chất vector search luôn trả top-K dù không liên quan | Đã có lọc score-gap trong `retrieval_service.py`; điều chỉnh `score_gap_ratio` nếu cần lọc gắt/lỏng hơn |
 | `ModuleNotFoundError: rag` khi chạy `mcp/src/server.py`                  | `sys.path` chưa trỏ đúng tới `project_root`              | Kiểm tra `PROJECT_ROOT = Path(__file__).resolve().parents[2]` trong `server.py`                         |
-| `search_profile`/`get_profile_detail` không tìm thấy dữ liệu gì          | Chưa chạy `sync_job` lần nào, Qdrant đang trống           | Chạy `python -m rag.jobs.sync_job` (hoặc `docker-compose run --rm sync_job`) rồi thử lại                |
+| `find_profile_and_answer`/`get_profile_detail` không tìm thấy dữ liệu gì | Chưa chạy `sync_job` lần nào, Qdrant đang trống           | Chạy `python -m rag.jobs.sync_job` (hoặc `docker-compose run --rm sync_job`) rồi thử lại                |
 
 ## Biến môi trường (`.env`)
 

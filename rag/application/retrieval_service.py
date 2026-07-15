@@ -1,7 +1,8 @@
 """
 application/retrieval_service.py — Use case "truy vấn dữ liệu RAG".
 
-Đây chính là phần mà MCP tools (search_profile, get_profile_detail)
+Đây chính là phần mà MCP tools (search_archives khi fallback semantic,
+get_profile_detail, find_profile_and_answer, search_content)
 HOẶC bất kỳ chatbot/service nào khác sẽ gọi vào để lấy dữ liệu đã được
 ingest sẵn trong Qdrant. RetrievalService không quan tâm ai gọi nó (MCP,
 REST API nội bộ, script...) — nó chỉ nhận câu hỏi, trả về dữ liệu.

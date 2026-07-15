@@ -1,52 +1,24 @@
 tools:
   # ────────────────────────────────────────────────────────────────
-  # TOOL 1: Search Profile — semantic search theo từ khóa tự do trên
-  # METADATA hồ sơ (title, arcFileCode, staffMetadata...) đã ingest sẵn
-  # vào Qdrant. Trả về archive_id để gọi tiếp get_profile_detail /
-  # find_profile_and_answer nếu cần hỏi sâu vào nội dung.
-  # ────────────────────────────────────────────────────────────────
-  - category: mcp
-    name_tool: search_profile
-    description: >
-      Tìm hồ sơ (archive) theo từ khóa tự do bằng semantic search (hiểu
-      theo nghĩa, không cần khớp chính xác chữ) trên metadata đã đánh
-      index sẵn (tiêu đề, mã hồ sơ, thông tin cán bộ...). Dùng khi cần
-      LIỆT KÊ các hồ sơ khớp với 1 từ khóa/chủ đề, KHÔNG dùng để trả
-      lời câu hỏi về nội dung chi tiết bên trong 1 hồ sơ cụ thể (dùng
-      get_profile_detail hoặc find_profile_and_answer cho việc đó).
-    inputSchema:
-      type: object
-      properties:
-        keyword:
-          type: string
-          description: "Từ khóa/chủ đề cần tìm, VD tên người, đơn vị công tác, chuyên ngành..."
-        top_k:
-          type: integer
-          description: "Số hồ sơ tối đa trả về. Mặc định và tối đa là 5."
-      required: ["keyword"]
-
-  # ────────────────────────────────────────────────────────────────
-  # TOOL 2: Get Profile Detail — trả lời câu hỏi TRONG PHẠM VI 1 hồ sơ
-  # ĐÃ BIẾT archive_id (thường lấy từ kết quả search_profile hoặc
-  # search_archives). Semantic search trên nội dung file MD đã chunk +
-  # embed sẵn.
+  # TOOL 1: Get Profile Detail — trả lời câu hỏi TRONG PHẠM VI 1 hồ sơ
+  # ĐÃ BIẾT archive_id (lấy từ kết quả search_archives). Semantic search
+  # trên nội dung file MD đã chunk + embed sẵn.
   # ────────────────────────────────────────────────────────────────
   - category: mcp
     name_tool: get_profile_detail
     description: >
       Trả lời câu hỏi chi tiết TRONG PHẠM VI 1 hồ sơ CỤ THỂ đã biết
-      archive_id (lấy từ search_profile/search_archives trước đó).
-      Semantic search trên nội dung file MD của hồ sơ đó (đã chunk +
-      embed sẵn trong Qdrant), trả về các đoạn text liên quan nhất kèm
-      nguồn (file_url, page_number). Nếu CHƯA có archive_id (chỉ có
-      tên người/từ khóa), dùng find_profile_and_answer thay vì tool
-      này.
+      archive_id (lấy từ search_archives trước đó). Semantic search
+      trên nội dung file MD của hồ sơ đó (đã chunk + embed sẵn trong
+      Qdrant), trả về các đoạn text liên quan nhất kèm nguồn (file_url,
+      page_number). Nếu CHƯA có archive_id (chỉ có tên người/từ khóa),
+      dùng find_profile_and_answer thay vì tool này.
     inputSchema:
       type: object
       properties:
         archive_id:
           type: string
-          description: "ID hồ sơ cần hỏi, lấy từ kết quả search_profile hoặc search_archives."
+          description: "ID hồ sơ cần hỏi, lấy từ kết quả search_archives."
         question:
           type: string
           description: "Câu hỏi cụ thể về nội dung hồ sơ, VD 'quyết định tăng lương vào ngày nào'."
@@ -56,10 +28,10 @@ tools:
       required: ["archive_id", "question"]
 
   # ────────────────────────────────────────────────────────────────
-  # TOOL: Find Profile And Answer — kết hợp tìm hồ sơ theo `key` (VD
-  # tên người) rồi trả lời `question` trong CHÍNH hồ sơ đó, dùng khi
-  # CHƯA biết archive_id. Gộp 2 bước search_profile + get_profile_detail
-  # thành 1 lần gọi.
+  # TOOL: Find Profile And Answer — tự tìm hồ sơ khớp nhất với `key`
+  # (VD tên người) bằng semantic search, rồi trả lời `question` trong
+  # CHÍNH hồ sơ đó, dùng khi CHƯA biết archive_id. Gộp bước "tìm hồ sơ"
+  # + "trả lời trong hồ sơ" thành 1 lần gọi.
   # ────────────────────────────────────────────────────────────────
   - category: mcp
     name_tool: find_profile_and_answer
@@ -67,9 +39,9 @@ tools:
       Dùng khi câu hỏi gắn với 1 hồ sơ/1 người CỤ THỂ nhưng CHƯA biết
       archive_id — VD: "Lê Minh Tuấn được quyết định tăng lương vào
       ngày nào?" -> key="Lê Minh Tuấn", question="quyết định tăng
-      lương vào ngày nào". Tool tự tìm hồ sơ khớp nhất với `key`, rồi
-      tìm đoạn text trả lời `question` TRONG chính hồ sơ đó (nội dung
-      file MD đã ingest). Không cần tự gọi search_profile rồi
+      lương vào ngày nào". Tool tự tìm hồ sơ khớp nhất với `key` bằng
+      semantic search, rồi tìm đoạn text trả lời `question` TRONG chính
+      hồ sơ đó (nội dung file MD đã ingest) — không cần tự gọi
       get_profile_detail riêng lẻ. Nếu câu hỏi có thể khớp với NHIỀU hồ
       sơ khác nhau (không rõ 1 hồ sơ cụ thể), dùng search_content thay
       vì tool này.
@@ -102,7 +74,8 @@ tools:
       find_profile_and_answer (cần biết `key` của 1 hồ sơ cụ thể
       trước), tool này tìm trực tiếp trong nội dung mà không cần biết
       trước hồ sơ nào. Mỗi kết quả trả về kèm archive_id để biết đoạn
-      đó thuộc hồ sơ nào.
+      đó thuộc hồ sơ nào — muốn xem chi tiết hồ sơ đó thì gọi tiếp
+      get_profile_detail.
     inputSchema:
       type: object
       properties:
@@ -115,8 +88,10 @@ tools:
       required: ["question"]
 
   # ────────────────────────────────────────────────────────────────
-  # TOOL 3: Search Archives — GET /api/public/archive (live, có filter
-  # chính xác theo field thật, KHÁC search_profile là semantic search)
+  # TOOL: Search Archives — GET /api/public/archive (live, filter
+  # chính xác theo field thật; tự fallback sang semantic search trên
+  # dữ liệu đã index nếu không khớp chính xác). Đây là tool DUY NHẤT
+  # để TÌM hồ sơ — không còn tool search_profile riêng nữa.
   # ────────────────────────────────────────────────────────────────
   - category: mcp
     name_tool: search_archives
@@ -159,16 +134,28 @@ tools:
           description: "Mã thời hạn bảo quản (VD: '10 năm', '5 năm', 'Vĩnh viễn')."
         created_from:
           type: string
-          description: "Lọc hồ sơ được tạo TỪ ngày này (ISO date, VD 2024-01-01)."
+          description: >
+            Lọc hồ sơ được tạo TỪ ngày này. BẮT BUỘC định dạng đầy đủ
+            YYYY-MM-DD (VD 2024-01-01) — TUYỆT ĐỐI không gửi chỉ năm
+            (VD "2022") hay chỉ năm-tháng, API sẽ lỗi. Nếu người dùng
+            chỉ nói năm (VD "từ năm 2022"), tự quy đổi thành ngày đầu
+            năm: "2022-01-01".
         created_to:
           type: string
-          description: "Lọc hồ sơ được tạo ĐẾN ngày này (ISO date)."
+          description: >
+            Lọc hồ sơ được tạo ĐẾN ngày này. BẮT BUỘC định dạng đầy đủ
+            YYYY-MM-DD. Nếu người dùng chỉ nói năm (VD "đến năm 2022"),
+            tự quy đổi thành ngày cuối năm: "2022-12-31".
         updated_from:
           type: string
-          description: "Lọc hồ sơ được cập nhật TỪ ngày này (ISO date)."
+          description: >
+            Lọc hồ sơ được cập nhật TỪ ngày này. BẮT BUỘC định dạng đầy
+            đủ YYYY-MM-DD, cùng quy tắc quy đổi năm-trần như created_from.
         updated_to:
           type: string
-          description: "Lọc hồ sơ được cập nhật ĐẾN ngày này (ISO date)."
+          description: >
+            Lọc hồ sơ được cập nhật ĐẾN ngày này. BẮT BUỘC định dạng đầy
+            đủ YYYY-MM-DD, cùng quy tắc quy đổi năm-trần như created_to.
         page:
           type: integer
           description: "Số trang, bắt đầu từ 0. Mặc định 0. Chỉ tăng lên khi trang trước không có kết quả phù hợp và vẫn còn trang tiếp theo."
