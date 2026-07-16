@@ -51,7 +51,10 @@ def _validate_iso_date(field_name: str, value: Optional[str]) -> None:
     thông báo lỗi dễ hiểu và có thể tự sửa lại tham số ở lượt gọi sau,
     thay vì nhận traceback 500 khó hiểu từ 1 hệ thống khác.
     """
-    if value is None:
+    if not value:
+        # Chặn cả None VÀ chuỗi rỗng '' — nhiều MCP client gửi "" cho
+        # field optional không dùng tới thay vì omit hẳn, nên phải coi
+        # là "không truyền" giống None, không phải giá trị cần validate.
         return
     if not _ISO_DATE_RE.match(value):
         raise ValueError(
@@ -139,7 +142,7 @@ class ArchiveApiClient:
             "page": page,
             "size": size,
         }
-        base_params = {k: v for k, v in base_params.items() if v is not None}
+        base_params = {k: v for k, v in base_params.items() if v not in (None, "")}
 
         # Khử trùng lặp + bỏ chuỗi rỗng, giữ nguyên thứ tự biến thể được truyền vào
         unique_keywords = list(dict.fromkeys(k for k in (keywords or []) if k and k.strip()))

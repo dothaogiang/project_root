@@ -223,6 +223,16 @@ class FeatureManager:
         return {
             "question": question,
             "found": bool(chunks),
+            "note": (
+                "Đây CHỈ LÀ vài đoạn text giống câu hỏi nhất (tối đa "
+                f"{MAX_TOP_K}), KHÔNG PHẢI danh sách/số lượng đầy đủ. "
+                "Nếu người dùng hỏi 'có bao nhiêu'/'tất cả'/'liệt kê "
+                "đầy đủ', KHÔNG được suy ra 1 con số hay danh sách "
+                "hoàn chỉnh từ đây — phải nói rõ hệ thống chỉ tìm được "
+                "vài ví dụ gần đúng nhất, không xác nhận được tổng số. "
+                "Điểm cao cũng không đảm bảo đúng LOẠI văn bản người "
+                "dùng hỏi — đọc kỹ nội dung 'text' trước khi khẳng định."
+            ),
             "message": None if chunks else (
                 "Không tìm thấy đoạn nội dung nào liên quan trong bất kỳ hồ sơ nào. "
                 "Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin."
