@@ -1,11 +1,6 @@
 """
 config/rag_config.py — Cấu hình RIÊNG cho module rag/, đọc từ cùng file
 .env ở gốc project.
-
-Module rag/ đọc cấu hình ĐỘC LẬP với src/config/configs.py (tầng MCP),
-để rag/ có thể được copy/tái sử dụng ở project khác mà không cần kéo
-theo toàn bộ code MCP. Nếu muốn dùng chung 1 file .env (khuyến nghị),
-chỉ cần đảm bảo các biến bên dưới có mặt trong .env gốc.
 """
 import os
 
@@ -15,24 +10,9 @@ load_dotenv()
 
 
 class RagConfig:
-    # --- Archive API (nguồn dữ liệu gốc) ---
-    # QUAN TRỌNG: rag/ và mcp/ (mcp/src/config/configs.py) đều đọc biến
-    # ARCHIVE_API_BASE_URL — nếu chỉ set 1 biến này, MỌI thứ (cả tool
-    # search_archives live lẫn MD ingestion) sẽ trỏ chung 1 nơi.
-    #
-    # Để test riêng phần MD ingestion bằng fake API mà KHÔNG ảnh hưởng
-    # tới các tool live (search_archives, get_archive_detail...) vẫn
-    # đang cần gọi backend thật, ưu tiên đọc RAG_ARCHIVE_API_BASE_URL
-    # (chỉ dành riêng cho rag/) nếu có; nếu không set thì fallback về
-    # ARCHIVE_API_BASE_URL như cũ (giữ nguyên hành vi production khi
-    # dùng chung 1 file .env, không phải sửa gì nếu không cần tách).
-    #
-    # VD trong .env khi test MD:
-    #   ARCHIVE_API_BASE_URL=http://192.168.1.32:4010      # mcp/ dùng - backend thật
-    #   RAG_ARCHIVE_API_BASE_URL=http://localhost:8000     # rag/ dùng - fake API test MD
     ARCHIVE_API_BASE_URL = (
         os.getenv("RAG_ARCHIVE_API_BASE_URL")
-        or os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.32:4010")
+        or os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.100:4010")
     )
     ARCHIVE_API_PATH = os.getenv("ARCHIVE_API_PATH", "/api/public/archive")
     ARCHIVE_API_PAGE_SIZE = int(os.getenv("ARCHIVE_API_PAGE_SIZE", "100"))

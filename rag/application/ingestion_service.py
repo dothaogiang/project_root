@@ -94,8 +94,24 @@ class IngestionService:
             logger.info(f"Archive {archive.id}: không có nội dung Markdown, bỏ qua nội dung chi tiết")
             return
 
+        # QUAN TRỌNG: try/except TỪNG file riêng biệt. Trước đây nếu 1
+        # file trong archive lỗi lúc chunk/embed/upsert (network timeout,
+        # embedding lỗi...), exception bay thẳng lên _sync_one_archive
+        # -> bị try/except ở run() nuốt -> CÁC FILE CÒN LẠI của CÙNG
+        # archive đó cũng bị bỏ qua theo, dù bản thân chúng hoàn toàn ổn.
+        # Hậu quả: archive vẫn có metadata trong collection "archives"
+        # (search_profiles/search_archives thấy bình thường) nhưng
+        # "document_chunks" thiếu 1 phần hoặc toàn bộ nội dung, khiến
+        # get_profile_detail/find_profile_and_answer luôn found=False dù
+        # hồ sơ rõ ràng tồn tại. Cô lập lỗi theo từng file để 1 file hỏng
+        # không kéo sập các file lành trong cùng archive.
         for project_name, file_url, text in markdown_docs:
-            await self._sync_file(archive, project_name, file_url, text)
+            try:
+                await self._sync_file(archive, project_name, file_url, text)
+            except Exception as e:
+                logger.error(
+                    f"Lỗi khi sync file '{file_url or project_name}' của archive {archive.id}: {e}"
+                )
 
     async def _sync_archive_metadata(self, archive: ArchiveRecord) -> None:
         search_text = _build_archive_search_text(archive)

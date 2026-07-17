@@ -81,13 +81,13 @@ def _compact_record(record: dict) -> dict:
 
 
 # Field thiết yếu để LIỆT KÊ/xác định hồ sơ (dùng cho search_archives
-# khi brief=True — mặc định, tối ưu cho lần gọi đầu tiên). Không gồm
-# "files"/fileKey vì không tool nào khác trong hệ thống tiêu thụ giá
-# trị đó (get_profile_detail chỉ cần archive_id).
+# khi brief=True — mặc định, tối ưu cho lần gọi đầu tiên). Có "files"
+# (fileName + fileKey + fileUrl) để LLM/người dùng lấy link file ngay
+# ở lần gọi đầu, không cần gọi thêm brief=False chỉ để lấy link.
 BRIEF_FIELDS = {
     "id", "title", "arcFileCode", "status", "warehouseName",
     "roomNumber", "shelfCode", "shelfLevelCode",
-    "startDate", "endDate", "hasFiles", "title_match",
+    "startDate", "endDate", "hasFiles", "title_match", "files",
 }
 
 def catch_tool_errors(func):
@@ -127,6 +127,54 @@ def catch_tool_errors(func):
             return error_payload
 
     return wrapper
+
+
+def _files_from_record(record: dict) -> list[dict]:
+    """Trích 'files' (fileName + fileKey + fileUrl) từ 1 record thô của
+    Public Archive API (projects[].documents[]) — dùng chung cho cả
+    nhánh keyword-match và nhánh enrich semantic_fallback bên dưới."""
+    files = []
+    for project in record.get("projects", []):
+        for doc in project.get("documents", []):
+            files.append({
+                "fileName": doc.get("fileName"),
+                "fileKey": _extract_file_key(doc.get("fileUrl")),
+                "fileUrl": doc.get("fileUrl"),
+            })
+    return files
+
+
+async def _fetch_files_for_profiles(client, profiles: list) -> dict[str, list[dict]]:
+    """Qdrant (semantic search) KHÔNG lưu file/fileUrl trong payload —
+    RetrievedProfile chỉ có metadata hồ sơ (title, mã, kệ, kho...).
+    Để trả link thật cho các hồ sơ tìm được qua semantic_fallback, gọi
+    lại LIVE Archive API theo `arcFileCode` (định danh khớp CHÍNH XÁC,
+    không mơ hồ như tên người) rồi lấy files từ record trả về. Chỉ 1
+    lượt gọi (client tự fan-out song song nếu nhiều mã), không cần
+    re-ingest lại toàn bộ Qdrant chỉ để thêm field này.
+
+    Trả về dict archive_id (str) -> list files. Nếu gọi lỗi (API down,
+    timeout...), trả về {} và log lỗi — KHÔNG làm hỏng luôn cả response
+    semantic_fallback chỉ vì bước enrich phụ này thất bại.
+    """
+    codes = list({p.arc_file_code for p in profiles if p.arc_file_code})
+    if not codes:
+        return {}
+    try:
+        result = await client.search_archives(keywords=codes, size=max(len(codes) * 2, 20))
+    except Exception:
+        logger.exception("Không lấy được files/link thật cho semantic fallback profiles")
+        return {}
+
+    files_by_id: dict[str, list[dict]] = {}
+    for record in result.get("content", []):
+        rid = record.get("id")
+        if rid is None:
+            continue
+        files = _files_from_record(record)
+        if files:
+            files_by_id[str(rid)] = files
+    return files_by_id
 
 
 class FeatureManager:
@@ -330,13 +378,13 @@ class FeatureManager:
         3 MỨC chi tiết trả về, tăng dần payload (chọn mức nhỏ nhất đủ dùng):
 
         1. `brief=True` (MẶC ĐỊNH — dùng cho LẦN GỌI ĐẦU TIÊN/liệt kê
-           nhiều hồ sơ): mỗi hồ sơ CHỈ gồm id, title, arcFileCode,
+           nhiều hồ sơ): mỗi hồ sơ gồm id, title, arcFileCode,
            status, warehouseName, roomNumber, shelfCode, shelfLevelCode,
-           startDate, endDate, hasFiles, title_match. Bỏ hẳn
-           description, createdAt/updatedAt, language, maintenance,
-           staffMetadata, borrowItems, và danh sách file (fileName/
-           fileKey — không tool nào khác dùng tới fileKey nên bỏ luôn
-           ở mức này). Đủ để liệt kê + xác định đúng hồ sơ cần xem tiếp.
+           startDate, endDate, hasFiles, title_match, và `files` (danh
+           sách gọn: fileName + fileKey + fileUrl — đủ để trả link file
+           ngay lần gọi đầu). Bỏ description, createdAt/updatedAt,
+           language, maintenance, staffMetadata, borrowItems. Đủ để
+           liệt kê + xác định đúng hồ sơ cần xem tiếp, kèm sẵn link tải.
         2. `brief=False, include_full_content=False`: thêm lại
            description, createdAt/updatedAt, language, maintenance,
            staffMetadata, borrowItems, danh sách `files` (tên file +
@@ -393,13 +441,7 @@ class FeatureManager:
                 # biết hồ sơ có file gì và gọi get_profile_detail khi cần
                 # đọc nội dung, mà không phải tải kèm toàn bộ markdown OCR
                 # của MỌI hồ sơ khớp keyword (kể cả hồ sơ không liên quan).
-                files = []
-                for project in record.get("projects", []):
-                    for doc in project.get("documents", []):
-                        files.append({
-                            "fileName": doc.get("fileName"),
-                            "fileKey": _extract_file_key(doc.get("fileUrl")),
-                        })
+                files = _files_from_record(record)
                 record["files"] = files
                 record.pop("projects", None)
 
@@ -456,6 +498,7 @@ class FeatureManager:
                 merged_keyword = " ".join(clean_keywords)
                 service = get_retrieval_service()
                 extra_profiles = service.search_profiles(keyword=merged_keyword, top_k=size)
+                extra_files_by_id = await _fetch_files_for_profiles(client, extra_profiles)
 
                 existing_ids = {
                     str(record.get("id")) for record in result["content"]
@@ -472,6 +515,8 @@ class FeatureManager:
                         "startDate": p.start_date,
                         "endDate": p.end_date,
                         "staffMetadata": p.staff_metadata,
+                        "hasFiles": bool(extra_files_by_id.get(str(p.archive_id))),
+                        "files": extra_files_by_id.get(str(p.archive_id), []),
                         "_score": p.score,
                         "_source": "semantic_fallback",
                     }
@@ -493,9 +538,9 @@ class FeatureManager:
 
             return result
 
-        has_other_filters = any([status, warehouse_id, language, maintenance,
-                                 created_from, created_to, updated_from, updated_to])
-        if not clean_keywords or has_other_filters:
+        if not clean_keywords:
+            # Không có keywords thì không có gì để semantic search -> chỉ
+            # có thể dựa vào filter chính xác, mà filter đã 0 kết quả rồi.
             result["search_mode"] = "keyword"
             result["found"] = False
             result["message"] = (
@@ -504,8 +549,16 @@ class FeatureManager:
             )
             return result
 
-        # Semantic search chỉ nhận 1 chuỗi keyword -> gộp các biến thể lại
-        # thành 1 câu, đủ để embedding bắt được nghĩa chung.
+        # Có keywords nhưng khớp chính xác ra 0 kết quả -> luôn thử semantic
+        # fallback, GIỐNG HỆT cách nhánh "có kết quả nhưng thiếu" phía trên
+        # đang làm (nhánh đó không chặn theo has_other_filters). Trước đây
+        # nhánh này chặn semantic fallback bất cứ khi nào có thêm filter
+        # khác (VD created_from) khiến hành vi giữa 2 nhánh không nhất
+        # quán: cùng 1 từ khóa gần đúng nhưng có kèm created_from thì bị
+        # coi là "không tìm thấy" thay vì được gợi ý ứng viên gần đúng.
+        has_other_filters = any([status, warehouse_id, language, maintenance,
+                                 created_from, created_to, updated_from, updated_to])
+
         merged_keyword = " ".join(clean_keywords)
         service = get_retrieval_service()
         profiles = service.search_profiles(keyword=merged_keyword, top_k=_clamp_top_k(size))
@@ -523,10 +576,25 @@ class FeatureManager:
                 "page": {"size": size, "number": 0, "totalElements": 0, "totalPages": 0},
             }
 
+        fallback_note = None
+        if has_other_filters:
+            fallback_note = (
+                # "Live API không tìm thấy hồ sơ khớp CHÍNH XÁC theo keywords và các "
+                # "filter đã truyền (status/warehouse/ngôn ngữ/ngày...). Danh sách dưới "
+                # "đây là ứng viên GẦN ĐÚNG lấy từ semantic search — LƯU Ý: semantic "
+                # "search KHÔNG áp dụng lại các filter đó, nên các hồ sơ này có thể nằm "
+                # "ngoài điều kiện status/warehouse/ngày đã yêu cầu, cần tự kiểm tra lại "
+                # "trước khi trả lời. Đừng khẳng định chắc chắn đây là hồ sơ người dùng "
+                # "cần, hãy hỏi lại để xác nhận nếu có nhiều ứng viên."
+            )
+
+        files_by_id = await _fetch_files_for_profiles(client, profiles)
+
         return {
             "search_mode": "semantic_fallback",
             "keywords": clean_keywords,
             "found": True,
+            "note": fallback_note,
             "content": [
                 {
                     "id": p.archive_id,
@@ -538,6 +606,8 @@ class FeatureManager:
                     "startDate": p.start_date,
                     "endDate": p.end_date,
                     "staffMetadata": p.staff_metadata,
+                    "hasFiles": bool(files_by_id.get(str(p.archive_id))),
+                    "files": files_by_id.get(str(p.archive_id), []),
                     "_score": p.score,
                 }
                 for p in profiles

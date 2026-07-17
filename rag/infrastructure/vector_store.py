@@ -12,6 +12,7 @@ vector DB khác (Milvus, pgvector...) chỉ cần viết 1 class mới implement
 lại VectorStorePort, không đụng application/.
 """
 import hashlib
+from urllib.parse import urlparse, parse_qs
 
 from qdrant_client import QdrantClient, models
 
@@ -24,6 +25,32 @@ logger = get_logger(__name__)
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
+
+
+def _stable_file_key(file_url: str) -> str:
+    """Tách phần 'key' ổn định (VD 'projects/xxx/yyy.pdf') khỏi file_url
+    dạng '.../files/proxy?key=xxx' — dùng làm định danh CHO POINT ID và
+    filter xóa THAY VÌ dùng nguyên file_url.
+
+    LÝ DO: file_url gồm cả HOST (VD 'http://192.168.1.32:4010/...'), mà
+    host này có thể đổi giữa các lần chạy sync_job (fake API -> API
+    thật, hoặc đổi domain/IP backend). Nếu dùng nguyên file_url làm khóa,
+    mỗi lần host đổi sẽ tạo ra point MỚI (point ID hash theo url khác)
+    thay vì ghi đè, ĐỒNG THỜI delete_chunks_by_file cũng không xóa được
+    point cũ (vì filter theo file_url cũ không khớp url mới) -> rác tồn
+    đọng vĩnh viễn, gây trùng lặp kết quả (search_content/search_chunks
+    trả về 2 chunk giống hệt nội dung, khác mỗi host trong file_url).
+
+    Nếu không tách được key (URL không đúng dạng proxy?key=...), fallback
+    về chính file_url — vẫn hoạt động đúng như hành vi cũ trong case đó,
+    không làm hỏng thêm.
+    """
+    if not file_url:
+        return file_url or ""
+    parsed = urlparse(file_url)
+    qs = parse_qs(parsed.query)
+    values = qs.get("key")
+    return values[0] if values else file_url
 
 
 def _point_id(*parts: str) -> str:
@@ -104,9 +131,11 @@ class QdrantVectorStore(VectorStorePort):
         client = self._client_ready()
         points = []
         for chunk, emb in zip(chunks, embeddings):
+            file_key = _stable_file_key(chunk.file_url)
             payload = {
                 "archive_id": chunk.archive_id,
                 "file_url": chunk.file_url,
+                "file_key": file_key,
                 "page_number": chunk.page_number,
                 "chunk_index": chunk.chunk_index,
                 "text": chunk.text,
@@ -115,7 +144,7 @@ class QdrantVectorStore(VectorStorePort):
             }
             points.append(
                 models.PointStruct(
-                    id=_point_id("chunk", chunk.archive_id, chunk.file_url, str(chunk.chunk_index)),
+                    id=_point_id("chunk", chunk.archive_id, file_key, str(chunk.chunk_index)),
                     vector=_to_qdrant_vector(emb),
                     payload=payload,
                 )
@@ -124,13 +153,14 @@ class QdrantVectorStore(VectorStorePort):
 
     def delete_chunks_by_file(self, archive_id: str, file_url: str) -> None:
         client = self._client_ready()
+        file_key = _stable_file_key(file_url)
         client.delete(
             collection_name=rag_config.COLLECTION_CHUNKS,
             points_selector=models.FilterSelector(
                 filter=models.Filter(
                     must=[
                         models.FieldCondition(key="archive_id", match=models.MatchValue(value=archive_id)),
-                        models.FieldCondition(key="file_url", match=models.MatchValue(value=file_url)),
+                        models.FieldCondition(key="file_key", match=models.MatchValue(value=file_key)),
                     ]
                 )
             ),

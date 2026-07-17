@@ -1,11 +1,5 @@
 """
 rag/logger.py — Logger RIÊNG của module rag/.
-
-Trước đây rag/ mượn tạm `logger.py` của mcp/src, khiến rag/ bị phụ
-thuộc ngược vào mcp/ (vi phạm nguyên tắc 2 folder độc lập). File này
-thay thế hoàn toàn cho việc import `from logger import get_logger`
-(logger của mcp) bằng `from rag.logger import get_logger` (logger của
-chính rag/).
 """
 import logging
 import os
