@@ -31,26 +31,64 @@ from typing import Optional
 
 logger = get_logger(__name__)
 
-# Số kết quả tối đa trả về cho MỌI tool search (get_profile_detail,
-# find_profile_and_answer, search_content, search_archives) — dù caller truyền top_k/size
-# lớn hơn, kết quả cũng bị cắt về tối đa giá trị này để tránh trả
-# về quá nhiều hồ sơ/đoạn text không cần thiết cho chatbot.
+# Số ĐOẠN TEXT (chunk nội dung) tối đa trả về cho các tool RAG:
+# get_profile_detail, find_profile_and_answer, search_content. Giữ nhỏ
+# vì mỗi chunk tốn nhiều token (kèm nội dung + nguồn).
 MAX_TOP_K = 5
 
+# Số HỒ SƠ (metadata) tối đa trả về riêng cho search_archives. Tách
+# riêng khỏi MAX_TOP_K vì đây chỉ là liệt kê hồ sơ (rẻ hơn nhiều so với
+# 1 chunk nội dung) — trước đây dùng chung MAX_TOP_K=5 khiến size=20
+# LLM truyền vào bị ép cứng xuống 5, làm hồ sơ đúng nhưng bị Archive
+# API xếp hạng thấp (VD "Phạm Thị Hoa" nằm ngoài top 5 của 14 kết quả
+# khớp "Hoa") không bao giờ lọt vào response, dù vẫn tồn tại trong dữ
+# liệu. 20 vẫn là mức trần hợp lý để tránh vượt context quá nhiều.
+MAX_ARCHIVE_LIST = 20
 
-def _clamp_top_k(value: int) -> int:
-    """Ép value không vượt quá MAX_TOP_K (vẫn cho phép nhỏ hơn nếu caller muốn ít hơn)."""
+
+def _clamp_top_k(value: int, max_value: int = MAX_TOP_K) -> int:
+    """Ép value không vượt quá max_value (vẫn cho phép nhỏ hơn nếu caller muốn ít hơn)."""
     if value is None:
-        return MAX_TOP_K
-    return min(value, MAX_TOP_K)
+        return max_value
+    return min(value, max_value)
 
 
-def _extract_file_key(file_url: str) -> Optional[str]:
+def _extract_file_key(file_url: Optional[str]) -> Optional[str]:
     """Tách 'key' từ URL dạng .../files/proxy?key=xxx — trả về đã decode sẵn."""
+    if not file_url:
+        return None
     parsed = urlparse(file_url)
     qs = parse_qs(parsed.query)
     values = qs.get("key")
     return values[0] if values else None
+
+
+def _normalize_vn(text: Optional[str]) -> str:
+    """Chỉ lowercase, CỐ Ý KHÔNG bỏ dấu thanh (sắc/huyền/hỏi/ngã/nặng) —
+    tiếng Việt có dấu là 2 từ khác nghĩa (VD "Hoa" tên người khác hẳn
+    "Hóa" trong "Hóa đơn"/"Hòa" trong "Hòa Khánh"). Bỏ dấu sẽ khiến các
+    từ này bị coi là khớp nhau, đúng vào lỗi đang cần sửa (search "Hoa"
+    ra nhầm "Hóa đơn", "Hòa Khánh")."""
+    return (text or "").lower()
+
+
+def _compact_record(record: dict) -> dict:
+    """Bỏ các field null/rỗng khỏi record (staffMetadata: [], shelfCode:
+    null...) — không mất thông tin (thiếu field = rỗng), chỉ giảm số ký
+    tự phải trả về khi có nhiều hồ sơ, phần lớn hồ sơ không dùng hết
+    các field optional này."""
+    return {k: v for k, v in record.items() if v not in (None, [], "")}
+
+
+# Field thiết yếu để LIỆT KÊ/xác định hồ sơ (dùng cho search_archives
+# khi brief=True — mặc định, tối ưu cho lần gọi đầu tiên). Không gồm
+# "files"/fileKey vì không tool nào khác trong hệ thống tiêu thụ giá
+# trị đó (get_profile_detail chỉ cần archive_id).
+BRIEF_FIELDS = {
+    "id", "title", "arcFileCode", "status", "warehouseName",
+    "roomNumber", "shelfCode", "shelfLevelCode",
+    "startDate", "endDate", "hasFiles", "title_match",
+}
 
 def catch_tool_errors(func):
     """
@@ -269,7 +307,9 @@ class FeatureManager:
             updated_from: str = None,
             updated_to: str = None,
             page: int = 0,
-            size: int = MAX_TOP_K,
+            size: int = MAX_ARCHIVE_LIST,
+            brief: bool = True,
+            include_full_content: bool = False,
     ) -> dict:
         """
         Tìm hồ sơ lưu trữ. Luôn thử khớp CHÍNH XÁC theo keywords/filter
@@ -284,10 +324,39 @@ class FeatureManager:
         gọi lại tool nhiều lần cho từng biến thể, tool đã tự gộp kết quả
         (khử trùng lặp theo id) trong 1 lượt duy nhất, tiết kiệm round-trip.
 
-        size luôn bị ép về tối đa MAX_TOP_K (5), kể cả khi caller truyền
-        giá trị lớn hơn, hoặc khi live API trả về nhiều hơn 5 hồ sơ.
+        size luôn bị ép về tối đa MAX_ARCHIVE_LIST (20), kể cả khi caller
+        truyền giá trị lớn hơn, hoặc khi live API trả về nhiều hồ sơ hơn.
+
+        3 MỨC chi tiết trả về, tăng dần payload (chọn mức nhỏ nhất đủ dùng):
+
+        1. `brief=True` (MẶC ĐỊNH — dùng cho LẦN GỌI ĐẦU TIÊN/liệt kê
+           nhiều hồ sơ): mỗi hồ sơ CHỈ gồm id, title, arcFileCode,
+           status, warehouseName, roomNumber, shelfCode, shelfLevelCode,
+           startDate, endDate, hasFiles, title_match. Bỏ hẳn
+           description, createdAt/updatedAt, language, maintenance,
+           staffMetadata, borrowItems, và danh sách file (fileName/
+           fileKey — không tool nào khác dùng tới fileKey nên bỏ luôn
+           ở mức này). Đủ để liệt kê + xác định đúng hồ sơ cần xem tiếp.
+        2. `brief=False, include_full_content=False`: thêm lại
+           description, createdAt/updatedAt, language, maintenance,
+           staffMetadata, borrowItems, danh sách `files` (tên file +
+           fileKey) — dùng khi đã thu hẹp còn ít hồ sơ và cần các field
+           phụ này để trả lời (VD lịch sử mượn trả).
+        3. `include_full_content=True`: thêm cả nội dung Markdown OCR
+           đầy đủ + fileUrls — CHỈ dùng khi đã xác định chắc chắn đúng
+           1 hồ sơ VÀ cần đọc nội dung ngay trong lượt này. Nếu không,
+           gọi `get_profile_detail(archive_id=...)` sau khi đã chọn
+           đúng hồ sơ (tool đó chỉ cần archive_id, không cần fileKey).
+
+        LƯU Ý: Public Archive API không đảm bảo sắp xếp theo độ liên quan
+        khi khớp keyword — 1 hồ sơ khớp đúng vẫn có thể bị xếp ngoài
+        trang trả về nếu tổng số khớp (totalElements) lớn hơn `size`.
+        Trường hợp đó, tool tự bổ sung thêm ứng viên từ semantic search
+        (đánh dấu "_source": "semantic_fallback" trong từng bản ghi bổ
+        sung, và "search_mode": "keyword+semantic_fallback") để tăng khả
+        năng không bỏ sót hồ sơ đúng, thay vì chỉ dừng lại ở trang đầu.
         """
-        size = _clamp_top_k(size)
+        size = _clamp_top_k(size, MAX_ARCHIVE_LIST)
         clean_keywords = [k for k in (keywords or []) if k and k.strip()]
         client = get_archive_api_client()
         result = await client.search_archives(
@@ -299,23 +368,129 @@ class FeatureManager:
         )
 
         # Phòng trường hợp live API không tôn trọng "size" (trả về nhiều
-        # hơn yêu cầu) — vẫn cắt về tối đa MAX_TOP_K trước khi trả ra.
-        if len(result.get("content", [])) > MAX_TOP_K:
-            result["content"] = result["content"][:MAX_TOP_K]
+        # hơn yêu cầu) — vẫn cắt về tối đa `size` (đã clamp theo
+        # MAX_ARCHIVE_LIST ở trên) trước khi trả ra.
+        if len(result.get("content", [])) > size:
+            result["content"] = result["content"][:size]
             page_info = result.get("page") or {}
-            page_info["size"] = MAX_TOP_K
+            page_info["size"] = size
             result["page"] = page_info
+
+        normalized_keywords = [_normalize_vn(k) for k in clean_keywords]
 
         for record in result.get("content", []):
             record["hasFiles"] = bool(record.get("projects"))
-            for project in record.get("projects", []):
-                project["fileKeys"] = [
-                    _extract_file_key(u) for u in project.get("fileUrls", [])
-                ]
+
+            if include_full_content:
+                for project in record.get("projects", []):
+                    project["fileKeys"] = [
+                        _extract_file_key(u) for u in project.get("fileUrls", [])
+                    ]
+            else:
+                # Cắt gọn: thay "projects" (kèm fileUrls dài + markdown OCR
+                # đầy đủ của từng document, rất nặng) bằng 1 danh sách
+                # "files" phẳng, chỉ gồm tên file + fileKey — đủ để LLM
+                # biết hồ sơ có file gì và gọi get_profile_detail khi cần
+                # đọc nội dung, mà không phải tải kèm toàn bộ markdown OCR
+                # của MỌI hồ sơ khớp keyword (kể cả hồ sơ không liên quan).
+                files = []
+                for project in record.get("projects", []):
+                    for doc in project.get("documents", []):
+                        files.append({
+                            "fileName": doc.get("fileName"),
+                            "fileKey": _extract_file_key(doc.get("fileUrl")),
+                        })
+                record["files"] = files
+                record.pop("projects", None)
+
+            # Public Archive API khớp keyword trên NHIỀU field ẩn (không
+            # chỉ title) nên trả về nhiều hồ sơ chỉ liên quan mờ nhạt
+            # (VD tìm "Hoa" ra cả "KCN Hòa Khánh", hồ sơ TEST không thấy
+            # "Hoa" ở đâu). "title_match" đánh dấu record có khớp NGAY
+            # TRONG title/arcFileCode hay không (bỏ dấu, không phân biệt
+            # hoa/thường) — KHÔNG loại bỏ các record còn lại (tránh mất
+            # dữ liệu, vì có thể khách vẫn cần các field khác), chỉ gắn
+            # cờ để LLM biết ưu tiên record nào khi trả lời/tóm tắt.
+            haystack = _normalize_vn(f"{record.get('title', '')} {record.get('arcFileCode', '')}")
+            record["title_match"] = bool(normalized_keywords) and any(
+                kw in haystack for kw in normalized_keywords
+            )
+
+        # Đưa record khớp title lên đầu danh sách (ổn định thứ tự trong
+        # từng nhóm) — giúp LLM đọc/trả lời được ngay mà không cần tự
+        # rà qua toàn bộ 14 hồ sơ để tìm ra 1-2 hồ sơ thực sự liên quan.
+        result["content"] = sorted(
+            result.get("content", []),
+            key=lambda r: not r.get("title_match", False),
+        )
+
+        if include_full_content:
+            pass  # đã giữ nguyên projects/documents/markdown/fileUrls ở nhánh trên
+        elif brief:
+            # Tier gọn nhất — dùng cho lần liệt kê đầu tiên: chỉ giữ field
+            # thiết yếu để nhận diện + hiển thị hồ sơ, bỏ hẳn files/
+            # fileKey (không tool nào khác trong hệ thống dùng tới),
+            # borrowItems, staffMetadata, description, ngày tạo/sửa...
+            result["content"] = [
+                _compact_record({k: v for k, v in record.items() if k in BRIEF_FIELDS})
+                for record in result["content"]
+            ]
+        else:
+            result["content"] = [_compact_record(r) for r in result["content"]]
 
         if result.get("content"):
             result["search_mode"] = "keyword"
             result["found"] = True
+
+            page_info = result.get("page") or {}
+            total_elements = page_info.get("totalElements", len(result["content"]))
+
+            # Archive API KHÔNG đảm bảo sắp xếp theo độ liên quan — nếu
+            # tổng số khớp keyword (totalElements) nhiều hơn số bản ghi
+            # đã trả về, hồ sơ đúng vẫn có thể bị rớt ngoài trang này
+            # (VD tìm "Hoa" ra 14 hồ sơ khớp nhưng "Phạm Thị Hoa" không
+            # nằm trong 5-20 bản ghi đầu). Trường hợp đó, bổ sung thêm
+            # ứng viên qua semantic search (Qdrant) để tăng recall,
+            # thay vì coi "có kết quả nào đó" là đã tìm đủ.
+            if clean_keywords and total_elements > len(result["content"]):
+                merged_keyword = " ".join(clean_keywords)
+                service = get_retrieval_service()
+                extra_profiles = service.search_profiles(keyword=merged_keyword, top_k=size)
+
+                existing_ids = {
+                    str(record.get("id")) for record in result["content"]
+                    if record.get("id") is not None
+                }
+                appended = [
+                    {
+                        "id": p.archive_id,
+                        "title": p.title,
+                        "arcFileCode": p.arc_file_code,
+                        "shelfCode": p.shelf_code,
+                        "shelfLevelCode": p.shelf_level_code,
+                        "warehouseName": p.warehouse_name,
+                        "startDate": p.start_date,
+                        "endDate": p.end_date,
+                        "staffMetadata": p.staff_metadata,
+                        "_score": p.score,
+                        "_source": "semantic_fallback",
+                    }
+                    for p in extra_profiles
+                    if str(p.archive_id) not in existing_ids
+                ]
+
+                if appended:
+                    result["content"].extend(appended)
+                    result["search_mode"] = "keyword+semantic_fallback"
+                    result["note"] = (
+                        f"Live API báo tổng cộng {total_elements} hồ sơ khớp từ khóa nhưng "
+                        f"chỉ {total_elements - len(appended)} hồ sơ đầu được trả về ở trang này "
+                        "(Archive API không sắp xếp theo độ liên quan). Đã bổ sung thêm "
+                        f"{len(appended)} ứng viên qua semantic search (đánh dấu "
+                        "\"_source\": \"semantic_fallback\" trong từng bản ghi) để giảm khả năng "
+                        "bỏ sót hồ sơ đúng. Hãy xem cả 2 loại kết quả trước khi trả lời."
+                    )
+
             return result
 
         has_other_filters = any([status, warehouse_id, language, maintenance,
