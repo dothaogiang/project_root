@@ -6,10 +6,6 @@ VectorStorePort.
   - "archives"        : 1 point = 1 hồ sơ (metadata) -> phục vụ search_profile
   - "document_chunks" : 1 point = 1 đoạn text trích từ PDF -> phục vụ
                          get_profile_detail (filter theo archive_id)
-
-Đây là nơi DUY NHẤT trong rag/ import qdrant_client -> muốn đổi sang
-vector DB khác (Milvus, pgvector...) chỉ cần viết 1 class mới implement
-lại VectorStorePort, không đụng application/.
 """
 import hashlib
 from urllib.parse import urlparse, parse_qs

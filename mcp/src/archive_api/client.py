@@ -11,13 +11,6 @@ X-Chatbot-Token, và tự refresh token khi gặp 401.
 Response search_archives của API thật hiện đã trả kèm nội dung Markdown
 đầy đủ trong từng project/document (documents[].markdown) — nên tool
 này không cần gọi thêm endpoint "detail" nào khác để lấy nội dung.
-
-Cố ý đặt trong mcp/ (không phải rag/) vì đây không phải logic
-embedding/vector — mcp/ sở hữu tích hợp trực tiếp này để phục vụ đúng
-tool của nó, giữ rag/ chỉ tập trung vào ingestion + semantic retrieval
-(dùng cho fallback semantic của search_archives, và các tool
-get_profile_detail/find_profile_and_answer/search_content khi cần hỏi
-sâu vào nội dung 1 hồ sơ cụ thể).
 """
 import asyncio
 import re

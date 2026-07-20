@@ -18,7 +18,6 @@ file YAML, không cần đụng vào registry.py hay server.py.
     documents[].markdown nên không cần tool "detail" riêng để lấy
     nội dung khi tìm được qua nhánh khớp chính xác.
 """
-import base64
 import functools
 import traceback
 
@@ -38,7 +37,7 @@ MAX_TOP_K = 5
 
 # Số HỒ SƠ (metadata) tối đa trả về riêng cho search_archives. Tách
 # riêng khỏi MAX_TOP_K vì đây chỉ là liệt kê hồ sơ (rẻ hơn nhiều so với
-# 1 chunk nội dung) — trước đây dùng chung MAX_TOP_K=5 khiến size=20
+# 1 chunk nội dung)
 # LLM truyền vào bị ép cứng xuống 5, làm hồ sơ đúng nhưng bị Archive
 # API xếp hạng thấp (VD "Phạm Thị Hoa" nằm ngoài top 5 của 14 kết quả
 # khớp "Hoa") không bao giờ lọt vào response, dù vẫn tồn tại trong dữ

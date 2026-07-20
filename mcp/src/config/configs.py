@@ -5,10 +5,6 @@ Gồm 2 nhóm:
   1. Cấu hình khởi động server (SERVER_NAME, PORT_SERVER, RESOURCES_DIR)
   2. Cấu hình cho archive_api/ — client gọi TRỰC TIẾP (live) Public
      Archive API để phục vụ tool search_archives.
-
-KHÔNG chứa cấu hình pipeline RAG (Qdrant, embedding, OCR, chunking,
-sync state) — phần đó nằm trong rag/config/rag_config.py, vì đó là
-concern riêng của ingestion/semantic-retrieval, không phải của mcp/.
 """
 import os
 from dotenv import load_dotenv
@@ -34,7 +30,7 @@ class Config:
     DEBUG_TOOL_ERRORS = os.getenv("DEBUG_TOOL_ERRORS", "true").lower() == "true"
 
     # --- Public Archive API (live query, dùng bởi archive_api/client.py) ---
-    ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.46:4000")
+    ARCHIVE_API_BASE_URL = os.getenv("ARCHIVE_API_BASE_URL", "http://192.168.1.100:4010")
     ARCHIVE_SEARCH_PATH = os.getenv("ARCHIVE_SEARCH_PATH", "/api/public/archives")
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 

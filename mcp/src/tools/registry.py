@@ -2,11 +2,6 @@
 ToolRegistry: match tool_name (định nghĩa trong tools.yaml) với hàm thực
 thi tương ứng trong FeatureManager (match theo TÊN HÀM), rồi build Tool
 object cho FastMCP.
-
-Đây là cơ chế "dynamic registration" -> thêm tool mới chỉ cần:
-  1. Thêm entry trong Resources/tools.yaml
-  2. Viết 1 method cùng tên trong FeatureManager
-Không cần sửa registry.py hay server.py.
 """
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.tools.base import Tool
