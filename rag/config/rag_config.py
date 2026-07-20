@@ -18,13 +18,11 @@ class RagConfig:
     ARCHIVE_API_PAGE_SIZE = int(os.getenv("ARCHIVE_API_PAGE_SIZE", "100"))
     HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 
-    # --- Chatbot session token (X-Chatbot-Token) ---
-    CHATBOT_TOKEN_PATH = os.getenv("CHATBOT_TOKEN_PATH", "/api/v1/chatbot/session-token")
-    CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID") or None
-    CHATBOT_CLIENT_SECRET = os.getenv("CHATBOT_CLIENT_SECRET") or None
-    # Refresh token sớm hơn hạn thật bao nhiêu giây, tránh race condition
-    # ngay sát lúc hết hạn (request đang bay thì token hết hạn giữa chừng)
-    TOKEN_REFRESH_BUFFER_SECONDS = int(os.getenv("TOKEN_REFRESH_BUFFER_SECONDS", "60"))
+    # LƯU Ý: rag/ (pipeline ingest one-off) KHÔNG dùng X-Chatbot-Token —
+    # HttpArchiveApiClient gọi thẳng không auth. Cấu hình token
+    # (CHATBOT_TOKEN_PATH/CLIENT_ID/CLIENT_SECRET) chỉ dùng cho tool
+    # search_archives (live query), xem mcp/src/config/configs.py và
+    # mcp/src/archive_api/token_manager.py.
 
     # --- Qdrant ---
     QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")

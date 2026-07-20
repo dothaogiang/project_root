@@ -18,7 +18,7 @@ bản trùng.
 """
 import asyncio
 
-from rag.domain.entities import ArchiveRecord
+from rag.domain.entities import ArchiveRecord, DocumentChunk
 from rag.ports.interfaces import (
     ArchiveApiClientPort,
     EmbeddingProviderPort,
@@ -62,11 +62,12 @@ class IngestionService:
         self._embedder = embedder
         self._vector_store = vector_store
         self._page_size = page_size
+        self._max_concurrency = sync_concurrency
         self._sync_semaphore = asyncio.Semaphore(sync_concurrency)
 
     async def run(self) -> None:
         self._vector_store.ensure_collections()
-        logger.info("Bắt đầu đồng bộ (chạy 1 lần, toàn bộ dữ liệu)")
+        logger.info("Bắt đầu đồng bộ (chạy 1 lần, toàn bộ dữ liệu, song song tối đa %d)", self._max_concurrency)
 
         page = 0
         while True:
@@ -74,17 +75,31 @@ class IngestionService:
             if not archives:
                 break
 
-            for archive in archives:
-                try:
-                    await self._sync_one_archive(archive)
-                except Exception as e:
-                    logger.error(f"Lỗi khi sync archive {archive.id}: {e}")
+            # QUAN TRỌNG: xử lý các archive trong CÙNG 1 trang SONG SONG
+            # (asyncio.gather) thay vì tuần tự từng archive như trước.
+            # Trước đây có semaphore(sync_concurrency) khai báo sẵn ở
+            # __init__ nhưng KHÔNG có chỗ nào gọi nhiều archive/file cùng
+            # lúc để nó thực sự giới hạn — nên dù cấu hình 4, job vẫn
+            # chỉ chạy như 1 luồng. Giờ gather() thực sự chạy song song,
+            # semaphore(_max_concurrency) trong _sync_one_archive mới có
+            # tác dụng giới hạn số archive đang embed/upsert cùng lúc
+            # (tránh quá tải CPU/RAM khi trang có hàng trăm archive).
+            await asyncio.gather(*(self._sync_archive_safe(archive) for archive in archives))
 
             if is_last:
                 break
             page += 1
 
         logger.info("Đồng bộ hoàn tất.")
+
+    async def _sync_archive_safe(self, archive: ArchiveRecord) -> None:
+        """Bọc lỗi RIÊNG cho từng archive khi chạy trong gather() — 1
+        archive lỗi không được để làm gather() hủy các archive khác
+        đang chạy song song cùng lúc."""
+        try:
+            await self._sync_one_archive(archive)
+        except Exception as e:
+            logger.error(f"Lỗi khi sync archive {archive.id}: {e}")
 
     async def _sync_one_archive(self, archive: ArchiveRecord) -> None:
         await self._sync_archive_metadata(archive)
@@ -94,40 +109,63 @@ class IngestionService:
             logger.info(f"Archive {archive.id}: không có nội dung Markdown, bỏ qua nội dung chi tiết")
             return
 
-        # QUAN TRỌNG: try/except TỪNG file riêng biệt. Trước đây nếu 1
-        # file trong archive lỗi lúc chunk/embed/upsert (network timeout,
-        # embedding lỗi...), exception bay thẳng lên _sync_one_archive
-        # -> bị try/except ở run() nuốt -> CÁC FILE CÒN LẠI của CÙNG
-        # archive đó cũng bị bỏ qua theo, dù bản thân chúng hoàn toàn ổn.
-        # Hậu quả: archive vẫn có metadata trong collection "archives"
-        # (search_profiles/search_archives thấy bình thường) nhưng
-        # "document_chunks" thiếu 1 phần hoặc toàn bộ nội dung, khiến
-        # get_profile_detail/find_profile_and_answer luôn found=False dù
-        # hồ sơ rõ ràng tồn tại. Cô lập lỗi theo từng file để 1 file hỏng
-        # không kéo sập các file lành trong cùng archive.
+        # BƯỚC 1 — extract + chunk TỪNG FILE riêng biệt, vẫn cô lập lỗi
+        # theo file ở bước này: đây là bước CPU thuần (parse Markdown,
+        # cắt chunk), rẻ và nhanh, rủi ro lỗi thấp — 1 file OCR lỗi định
+        # dạng không nên chặn các file lành trong cùng archive.
+        all_chunks: list[DocumentChunk] = []
+        touched_file_urls: set[str] = set()
         for project_name, file_url, text in markdown_docs:
             try:
-                await self._sync_file(archive, project_name, file_url, text)
+                chunks = await asyncio.to_thread(
+                    self._md_extractor.extract_and_chunk, archive.id, file_url, project_name, text
+                )
+                if not chunks:
+                    logger.warning(f"Không trích được text từ: {file_url or project_name}")
+                    continue
+                all_chunks.extend(chunks)
+                touched_file_urls.add(file_url)
             except Exception as e:
                 logger.error(
-                    f"Lỗi khi sync file '{file_url or project_name}' của archive {archive.id}: {e}"
+                    f"Lỗi khi extract file '{file_url or project_name}' của archive {archive.id}: {e}"
                 )
+
+        if not all_chunks:
+            return
+
+        # BƯỚC 2 — embed TOÀN BỘ chunk của archive này trong 1 lần gọi
+        # embed_batch() DUY NHẤT, thay vì gọi riêng cho từng file như
+        # trước. fastembed/ONNX có chi phí cố định (tokenize, khởi tạo
+        # phiên...) cho MỖI lần gọi ngoài phần tính toán thật -> archive
+        # có nhiều file nhỏ sẽ nhanh hơn rõ rệt khi gộp thành 1 batch
+        # lớn thay vì N lần gọi nhỏ.
+        # ĐÁNH ĐỔI: mất cô lập lỗi theo file ở bước embed/upsert — nếu
+        # embed_batch() lỗi (hết bộ nhớ, model lỗi...), CẢ archive mất
+        # chunk cho lần chạy này, không chỉ 1 file. Chấp nhận được vì
+        # upsert là idempotent (point ID tính từ archive_id/file_url/
+        # chunk_index) — chạy lại sync_job sẽ tự bù lại, không tạo bản
+        # trùng. Nếu sau này thấy archive rất lớn (hàng trăm file) hay
+        # bị mất trắng vì 1 lỗi nhỏ, có thể tách nhỏ theo lô (batch theo
+        # từng 20-30 file) thay vì gộp toàn bộ archive.
+        #
+        # asyncio.to_thread(): embed_batch/upsert_chunks là hàm ĐỒNG BỘ
+        # (port không async) — gọi trực tiếp trong coroutine sẽ CHẶN
+        # event loop, khiến các archive khác đang "chạy song song" qua
+        # gather() thực ra vẫn phải xếp hàng chờ. Đẩy sang thread riêng
+        # để nhường event loop cho các archive khác trong lúc archive
+        # này đang embed/upsert.
+        async with self._sync_semaphore:
+            embeddings = await asyncio.to_thread(self._embedder.embed_batch, [c.text for c in all_chunks])
+            for file_url in touched_file_urls:
+                await asyncio.to_thread(self._vector_store.delete_chunks_by_file, archive.id, file_url)
+            await asyncio.to_thread(self._vector_store.upsert_chunks, all_chunks, embeddings)
+
+        logger.info(
+            f"Archive {archive.id}: đã đồng bộ {len(all_chunks)} chunk từ {len(touched_file_urls)} file"
+        )
 
     async def _sync_archive_metadata(self, archive: ArchiveRecord) -> None:
         search_text = _build_archive_search_text(archive)
-        embedding = self._embedder.embed_text(search_text)
-        self._vector_store.upsert_archive(archive, embedding)
-
-    async def _sync_file(self, archive: ArchiveRecord, project_name: str, file_url: str, text: str) -> None:
         async with self._sync_semaphore:
-            chunks = self._md_extractor.extract_and_chunk(archive.id, file_url, project_name, text)
-
-            if not chunks:
-                logger.warning(f"Không trích được text từ: {file_url or project_name}")
-                return
-
-            embeddings = self._embedder.embed_batch([c.text for c in chunks])
-            self._vector_store.delete_chunks_by_file(archive.id, file_url)
-            self._vector_store.upsert_chunks(chunks, embeddings)
-
-            logger.info(f"Đã đồng bộ {len(chunks)} chunk từ: {file_url or project_name}")
+            embedding = await asyncio.to_thread(self._embedder.embed_text, search_text)
+            await asyncio.to_thread(self._vector_store.upsert_archive, archive, embedding)

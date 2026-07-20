@@ -102,13 +102,22 @@ tools:
       không có kết quả nào mới tự mở rộng sang tìm kiếm theo nghĩa
       (semantic) trên dữ liệu đã đánh index. Không cần gọi tool nào
       khác để "tìm theo nghĩa" — cứ gọi tool này. Response có field
-      "search_mode": "keyword" hoặc "semantic_fallback" để biết kết quả
-      đến từ nguồn nào. Mặc định (include_details=false) response được
-      RÚT GỌN: bỏ các field ít dùng (shelfCode, shelfLevelCode,
-      warehouseName, startDate, endDate, roomNumber, totalDoc, language,
-      maintenance) và bỏ nội dung markdown của document. Chỉ set
-      include_details=true khi người dùng hỏi cụ thể tới nội dung file /
-      vị trí lưu kho / thời hạn bảo quản của 1 hồ sơ đã xác định được.
+      "search_mode": "keyword" hoặc "semantic_fallback"/"keyword+semantic_fallback"
+      để biết kết quả đến từ nguồn nào. Có 3 MỨC chi tiết trả về, tăng
+      dần payload (chọn mức nhỏ nhất đủ dùng):
+      1) brief=true (MẶC ĐỊNH, dùng cho lần gọi đầu tiên/liệt kê nhiều
+      hồ sơ): mỗi hồ sơ chỉ gồm id, title, arcFileCode, status,
+      warehouseName, roomNumber, shelfCode, shelfLevelCode, startDate,
+      endDate, hasFiles, title_match, files (fileName/fileKey/fileUrl
+      gọn) — đủ để liệt kê + lấy link file ngay.
+      2) brief=false, include_full_content=false: thêm description,
+      createdAt/updatedAt, language, maintenance, staffMetadata,
+      borrowItems — dùng khi đã thu hẹp còn ít hồ sơ và cần các field
+      phụ này để trả lời.
+      3) include_full_content=true: thêm cả nội dung Markdown OCR đầy
+      đủ + fileUrls — CHỈ dùng khi đã xác định chắc chắn đúng 1 hồ sơ
+      VÀ cần đọc nội dung ngay trong lượt này; nếu không, gọi
+      get_profile_detail(archive_id=...) sau khi đã chọn đúng hồ sơ.
     inputSchema:
       type: object
       properties:
@@ -164,13 +173,24 @@ tools:
           description: "Số trang, bắt đầu từ 0. Mặc định 0. Chỉ tăng lên khi trang trước không có kết quả phù hợp và vẫn còn trang tiếp theo."
         size:
           type: integer
-          description: "Số hồ sơ mỗi trang. Mặc định 20."
-        include_details:
+          description: "Số hồ sơ mỗi trang. Mặc định và tối đa 20 (bị ép cứng dù truyền lớn hơn)."
+        brief:
           type: boolean
           description: >
-            Mặc định false: response rút gọn, bỏ field ít dùng (shelfCode,
-            shelfLevelCode, warehouseName, startDate, endDate, roomNumber,
-            totalDoc, language, maintenance) và bỏ nội dung markdown của
-            document. Chỉ set true khi người dùng hỏi cụ thể tới nội dung
-            file / vị trí lưu kho vật lý / thời hạn bảo quản.
+            Mặc định true: response RÚT GỌN NHẤT, chỉ giữ field thiết
+            yếu để liệt kê + xác định hồ sơ (id, title, arcFileCode,
+            status, warehouseName, roomNumber, shelfCode, shelfLevelCode,
+            startDate, endDate, hasFiles, title_match, files). Dùng cho
+            lần gọi đầu tiên/liệt kê nhiều hồ sơ. Set false khi đã thu
+            hẹp còn ít hồ sơ và cần thêm description, ngày tạo/sửa,
+            language, maintenance, staffMetadata, borrowItems.
+        include_full_content:
+          type: boolean
+          description: >
+            Mặc định false. Chỉ set true khi đã xác định chắc chắn đúng
+            1 hồ sơ VÀ cần đọc nội dung Markdown OCR đầy đủ ngay trong
+            lượt này (thêm cả fileUrls). Nếu không, dùng
+            get_profile_detail(archive_id=...) sau khi đã chọn đúng hồ
+            sơ thay vì bật cờ này cho nhiều hồ sơ cùng lúc (tốn nhiều
+            token vì kèm toàn bộ nội dung OCR của MỌI hồ sơ khớp).
       required: []

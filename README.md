@@ -213,9 +213,13 @@ với `transport="streamable-http"`).
 | `ModuleNotFoundError: rag` khi chạy `mcp/src/server.py`                  | `sys.path` chưa trỏ đúng tới `project_root`              | Kiểm tra `PROJECT_ROOT = Path(__file__).resolve().parents[2]` trong `server.py`                         |
 | `find_profile_and_answer`/`get_profile_detail` không tìm thấy dữ liệu gì | Chưa chạy `sync_job` lần nào, Qdrant đang trống           | Chạy `python -m rag.jobs.sync_job` (hoặc `docker-compose run --rm sync_job`) rồi thử lại                |
 
-## Biến môi trường (`.env`)
+[//]: # (## Biến môi trường &#40;`.env`&#41;)
 
-Xem đầy đủ trong `.env.example` — dùng chung 1 file `.env` ở project
-root cho cả `mcp/` (`SERVER_NAME`, `PORT_SERVER`...) và `rag/`
-(`ARCHIVE_API_BASE_URL`, `QDRANT_URL`, `DENSE_MODEL_NAME`,
-`CHUNK_*`...).
+[//]: # ()
+[//]: # (Xem đầy đủ trong `.env.example` — dùng chung 1 file `.env` ở project)
+
+[//]: # (root cho cả `mcp/` &#40;`SERVER_NAME`, `PORT_SERVER`...&#41; và `rag/`)
+
+[//]: # (&#40;`ARCHIVE_API_BASE_URL`, `QDRANT_URL`, `DENSE_MODEL_NAME`,)
+
+[//]: # (`CHUNK_*`...&#41;.)

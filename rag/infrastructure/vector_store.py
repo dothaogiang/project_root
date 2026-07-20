@@ -200,6 +200,7 @@ class QdrantVectorStore(VectorStorePort):
             )
             for p in points
         ]
+
     def search_chunks(
         self, query_embedding: Embedding, top_k: int, archive_id: str | None = None
     ) -> list[RetrievedChunk]:

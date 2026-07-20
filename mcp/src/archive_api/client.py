@@ -69,23 +69,52 @@ class ArchiveApiClient:
         self._base_url = config_object.ARCHIVE_API_BASE_URL
         self._timeout = config_object.HTTP_TIMEOUT_SECONDS
         self._token_manager = get_token_manager()
+        # QUAN TRỌNG: 1 AsyncClient DUY NHẤT cho suốt vòng đời process,
+        # KHÔNG tạo mới mỗi request. httpx.AsyncClient giữ 1 connection
+        # pool bên trong (keep-alive) — tái sử dụng được kết nối TCP/TLS
+        # đã bắt tay xong cho các request tiếp theo tới CÙNG base_url,
+        # thay vì bắt tay lại từ đầu mỗi lần gọi. Quan trọng hơn: khi
+        # search_archives fan-out song song nhiều keyword (asyncio.gather
+        # ở _search_one), tất cả cùng dùng chung 1 pool này thay vì mỗi
+        # nhánh song song tự mở 1 connection riêng.
+        # Khởi tạo LAZY (ở _get_client) chứ không tạo ngay ở __init__,
+        # vì AsyncClient cần được tạo bên trong 1 event loop đang chạy.
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._client_lock = asyncio.Lock()
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._http_client is None:
+            async with self._client_lock:
+                # double-checked locking: tránh 2 request đầu tiên chạy
+                # song song cùng lúc tạo ra 2 client khác nhau
+                if self._http_client is None:
+                    self._http_client = httpx.AsyncClient()
+        return self._http_client
+
+    async def aclose(self) -> None:
+        """Đóng connection pool khi server shutdown. Gọi từ server.py
+        (hoặc bỏ qua cũng không sao vì đây là singleton sống hết vòng
+        đời process — OS tự dọn socket khi process thoát)."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
 
     async def _request(self, method: str, path: str, params: Optional[dict] = None) -> httpx.Response:
         url = f"{self._base_url}{path}"
         token = await self._token_manager.get_token()
         headers = {"X-Chatbot-Token": token} if token else {}
+        client = await self._get_client()
 
-        async with httpx.AsyncClient() as client:
+        resp = await client.request(method, url, params=params, headers=headers, timeout=self._timeout)
+
+        if resp.status_code == 401 and config_object.AUTH_ENABLED:
+            logger.warning(f"Token hết hạn/không hợp lệ khi gọi {url}, xin token mới rồi thử lại...")
+            token = await self._token_manager.get_token(force_refresh=True)
+            headers = {"X-Chatbot-Token": token} if token else {}
             resp = await client.request(method, url, params=params, headers=headers, timeout=self._timeout)
 
-            if resp.status_code == 401 and config_object.AUTH_ENABLED:
-                logger.warning(f"Token hết hạn/không hợp lệ khi gọi {url}, xin token mới rồi thử lại...")
-                token = await self._token_manager.get_token(force_refresh=True)
-                headers = {"X-Chatbot-Token": token} if token else {}
-                resp = await client.request(method, url, params=params, headers=headers, timeout=self._timeout)
-
-            resp.raise_for_status()
-            return resp
+        resp.raise_for_status()
+        return resp
 
     async def search_archives(
             self,
@@ -166,13 +195,23 @@ class ArchiveApiClient:
                     seen_ids.add(rid)
                 merged_content.append(record)
 
+        # QUAN TRỌNG: tính totalElements TRƯỚC KHI cắt theo size, không
+        # phải sau. feature_manager.py dựa vào so sánh
+        # "totalElements > len(content)" để quyết định có cần bổ sung
+        # ứng viên qua semantic search hay không (trang hiện tại có bị
+        # cắt bớt hồ sơ khớp hay không). Nếu tính totalElements = số
+        # lượng SAU KHI đã cắt (bằng đúng len(content) sau cắt), 2 giá
+        # trị này luôn bằng nhau -> điều kiện trên không bao giờ đúng
+        # khi có >1 keyword, vô tình tắt luôn phần bổ sung semantic
+        # fallback ở nhánh phổ biến nhất (nhiều biến thể từ khóa).
+        total_elements = len(merged_content)
         merged_content = merged_content[:size]
         return {
             "content": merged_content,
             "page": {
                 "size": size,
                 "number": page,
-                "totalElements": len(merged_content),
+                "totalElements": total_elements,
                 "totalPages": 1,
             },
         }
