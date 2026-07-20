@@ -13,6 +13,7 @@ chạy theo mỗi request của người dùng cuối.
 """
 from typing import TypeVar
 
+from rag.config.rag_config import rag_config
 from rag.domain.entities import RetrievedChunk, RetrievedProfile
 from rag.ports.interfaces import EmbeddingProviderPort, VectorStorePort
 from rag.infrastructure.text_normalize import strip_diacritics
@@ -24,7 +25,11 @@ _Scored = TypeVar("_Scored", RetrievedProfile, RetrievedChunk)
 # "không tìm thấy". Điểm rơi rất nhanh theo dạng 1/rank là dấu hiệu
 # điển hình cho thấy phần đuôi chỉ là noise. Lọc bớt tại đây để chatbot
 # phía sau nhận được kết quả sạch, không phải tự "đãi cát tìm vàng".
-_DEFAULT_SCORE_GAP_RATIO = 0.5
+#
+# Giá trị mặc định đọc từ rag_config (biến môi trường SCORE_GAP_RATIO)
+# thay vì hardcode ở đây, để chỉnh gắt/lỏng hơn qua .env mà không cần
+# sửa code + deploy lại.
+_DEFAULT_SCORE_GAP_RATIO = rag_config.SCORE_GAP_RATIO
 
 
 def _filter_by_score_gap(results: list[_Scored], ratio: float) -> list[_Scored]:

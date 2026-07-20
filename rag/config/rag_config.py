@@ -40,5 +40,10 @@ class RagConfig:
     CHUNK_SIZE_CHARS = int(os.getenv("CHUNK_SIZE_CHARS", "1200"))
     CHUNK_OVERLAP_CHARS = int(os.getenv("CHUNK_OVERLAP_CHARS", "200"))
 
+    # --- Retrieval ---
+    # Ngưỡng lọc kết quả theo tỉ lệ so với điểm cao nhất (0 < ratio <= 1):
+    # 1 kết quả bị loại nếu score < top_score * SCORE_GAP_RATIO. 
+    SCORE_GAP_RATIO = float(os.getenv("SCORE_GAP_RATIO", "0.5"))
+
 
 rag_config = RagConfig()
