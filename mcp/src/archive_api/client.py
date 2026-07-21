@@ -3,8 +3,8 @@ archive_api/client.py — Client gọi TRỰC TIẾP Public Archive API, phục 
 tool `search_archives` (tìm hồ sơ theo keyword/filter chính xác, LIVE).
 
 KHÁC với rag/infrastructure/archive_api_client.py: client đó chỉ phục
-vụ ingestion hàng loạt cho pipeline RAG (fetch_page/download_file để
-đưa vào Qdrant, không cần auth). Client này phục vụ tool MCP trả lời
+vụ ingestion hàng loạt cho pipeline RAG (fetch_page để lấy metadata và
+markdown đưa vào Qdrant, không cần auth). Client này phục vụ tool MCP trả lời
 LIVE cho người dùng — gọi thẳng theo field lọc chính xác, có auth qua
 X-Chatbot-Token, và tự refresh token khi gặp 401.
 
@@ -20,6 +20,7 @@ from typing import Any, Optional
 import httpx
 
 from archive_api.token_manager import get_token_manager
+from archive_api.retry import retry_transient
 from config.configs import config_object
 from logger import get_logger
 
@@ -99,6 +100,7 @@ class ArchiveApiClient:
             await self._http_client.aclose()
             self._http_client = None
 
+    @retry_transient
     async def _request(self, method: str, path: str, params: Optional[dict] = None) -> httpx.Response:
         url = f"{self._base_url}{path}"
         token = await self._token_manager.get_token()
@@ -169,6 +171,19 @@ class ArchiveApiClient:
         # Khử trùng lặp + bỏ chuỗi rỗng, giữ nguyên thứ tự biến thể được truyền vào
         unique_keywords = list(dict.fromkeys(k for k in (keywords or []) if k and k.strip()))
 
+        # Chặn trần số lượng biến thể fan-out song song (mặc định 8) —
+        # tránh 1 lượt gọi tool vô tình bắn hàng chục request đồng thời
+        # vào chính Archive API nội bộ nếu caller (LLM) truyền quá nhiều
+        # keyword. Cắt bớt phần dư, GIỮ NGUYÊN thứ tự đã truyền (các biến
+        # thể quan trọng nhất thường được liệt kê trước).
+        if len(unique_keywords) > config_object.MAX_KEYWORDS_FANOUT:
+            logger.warning(
+                f"search_archives nhận {len(unique_keywords)} keyword, vượt trần "
+                f"MAX_KEYWORDS_FANOUT={config_object.MAX_KEYWORDS_FANOUT} -> chỉ dùng "
+                f"{config_object.MAX_KEYWORDS_FANOUT} keyword đầu tiên."
+            )
+            unique_keywords = unique_keywords[: config_object.MAX_KEYWORDS_FANOUT]
+
         if len(unique_keywords) <= 1:
             params = dict(base_params)
             if unique_keywords:
@@ -186,7 +201,13 @@ class ArchiveApiClient:
 
         merged_content: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
+        total_elements = 0
+        total_pages = 1
         for page_result in pages:
+            page_info = page_result.get("page") or {}
+            total_elements += page_info.get("totalElements", len(page_result.get("content", [])))
+            total_pages = max(total_pages, page_info.get("totalPages", 1))
+
             for record in page_result.get("content", []):
                 rid = record.get("id")
                 if rid is not None and rid in seen_ids:
@@ -195,16 +216,6 @@ class ArchiveApiClient:
                     seen_ids.add(rid)
                 merged_content.append(record)
 
-        # QUAN TRỌNG: tính totalElements TRƯỚC KHI cắt theo size, không
-        # phải sau. feature_manager.py dựa vào so sánh
-        # "totalElements > len(content)" để quyết định có cần bổ sung
-        # ứng viên qua semantic search hay không (trang hiện tại có bị
-        # cắt bớt hồ sơ khớp hay không). Nếu tính totalElements = số
-        # lượng SAU KHI đã cắt (bằng đúng len(content) sau cắt), 2 giá
-        # trị này luôn bằng nhau -> điều kiện trên không bao giờ đúng
-        # khi có >1 keyword, vô tình tắt luôn phần bổ sung semantic
-        # fallback ở nhánh phổ biến nhất (nhiều biến thể từ khóa).
-        total_elements = len(merged_content)
         merged_content = merged_content[:size]
         return {
             "content": merged_content,
@@ -212,7 +223,7 @@ class ArchiveApiClient:
                 "size": size,
                 "number": page,
                 "totalElements": total_elements,
-                "totalPages": 1,
+                "totalPages": total_pages,
             },
         }
 

@@ -13,7 +13,7 @@ LƯU Ý: job này chạy MỘT LẦN DUY NHẤT (one-off), không có cơ chế
 checkpoint/resume hay incremental sync — mỗi lần chạy sẽ duyệt và
 nhúng lại toàn bộ dữ liệu từ đầu. Việc upsert vào Qdrant vẫn an toàn
 khi chạy lại nhiều lần vì point ID được tính deterministic từ
-(archive_id, file_url, chunk_index) — chạy lại chỉ ghi đè, không tạo
+(archive_id, file_key, chunk_index) — chạy lại chỉ ghi đè, không tạo
 bản trùng.
 """
 import asyncio
@@ -70,10 +70,20 @@ class IngestionService:
         logger.info("Bắt đầu đồng bộ (chạy 1 lần, toàn bộ dữ liệu, song song tối đa %d)", self._max_concurrency)
 
         page = 0
-        while True:
-            archives, is_last = await self._archive_api.fetch_page(page, self._page_size)
-            if not archives:
-                break
+        archives, is_last = await self._archive_api.fetch_page(page, self._page_size)
+
+        while archives:
+            # QUAN TRỌNG: bắt đầu fetch TRANG KẾ TIẾP ngay bây giờ, chạy
+            # NỀN (asyncio.create_task) song song với việc embed/upsert
+            # các archive của trang HIỆN TẠI bên dưới — giấu bớt độ trễ
+            # round-trip gọi fetch_page() phía sau công việc nặng hơn
+            # (embed batch + upsert Qdrant của cả trang), thay vì đợi xử
+            # lý xong 100% trang hiện tại rồi mới bắt đầu gọi mạng xin
+            # trang tiếp theo (trước đây 2 việc này hoàn toàn tuần tự).
+            next_page_task = (
+                None if is_last
+                else asyncio.create_task(self._archive_api.fetch_page(page + 1, self._page_size))
+            )
 
             # QUAN TRỌNG: xử lý các archive trong CÙNG 1 trang SONG SONG
             # (asyncio.gather) thay vì tuần tự từng archive như trước.
@@ -86,8 +96,9 @@ class IngestionService:
             # (tránh quá tải CPU/RAM khi trang có hàng trăm archive).
             await asyncio.gather(*(self._sync_archive_safe(archive) for archive in archives))
 
-            if is_last:
+            if next_page_task is None:
                 break
+            archives, is_last = await next_page_task
             page += 1
 
         logger.info("Đồng bộ hoàn tất.")

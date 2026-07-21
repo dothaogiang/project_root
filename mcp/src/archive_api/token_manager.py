@@ -20,6 +20,7 @@ from typing import Optional
 
 import httpx
 
+from archive_api.retry import retry_transient
 from config.configs import config_object
 from logger import get_logger
 
@@ -46,6 +47,7 @@ class SessionTokenManager:
             self._token = await self._request_new_token()
             return self._token
 
+    @retry_transient
     async def _request_new_token(self) -> str:
         url = f"{config_object.ARCHIVE_API_BASE_URL}{config_object.CHATBOT_TOKEN_PATH}"
 

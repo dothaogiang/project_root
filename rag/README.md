@@ -71,14 +71,14 @@ python -m rag.jobs.sync_job
 
 Luồng: `HttpArchiveApiClient.fetch_page()` → với mỗi archive: embed
 metadata → `QdrantVectorStore.upsert_archive()` (collection
-`archives`); với mỗi file MD: `download_file()` → `MdExtractor` trích
-text + chunk → `FastEmbedProvider.embed_batch()` →
+`archives`); với mỗi document có `markdown` trong response API:
+`MdExtractor` chia chunk → `FastEmbedProvider.embed_batch()` →
 `QdrantVectorStore.upsert_chunks()` (collection `document_chunks`).
 
 Đây là job **one-off**: không có cron/APScheduler/checkpoint, mỗi lần
 chạy sẽ duyệt và nhúng lại toàn bộ dữ liệu lấy được từ Archive API tại
 thời điểm chạy. Chạy lại nhiều lần vẫn an toàn — point ID trong Qdrant
-được tính deterministic từ `(archive_id, file_url, chunk_index)`, nên
+được tính deterministic từ `(archive_id, file_key, chunk_index)`, nên
 upsert chỉ ghi đè dữ liệu cũ, không tạo bản trùng.
 
 Muốn cập nhật dữ liệu về sau (có archive mới, nội dung đổi...), chạy
@@ -101,8 +101,8 @@ chunks = service.search_chunks_in_archive(
 )
 ```
 
-Đây chính là nơi MCP `feature_manager.py` (`search_profile`,
-`get_profile_detail`) gọi vào — xem `src/feature_manager.py` đã được
+Đây chính là nơi MCP `feature_manager.py` (`search_archives` fallback,
+`get_profile_detail`, `find_profile_and_answer`, `search_content`) gọi vào — xem `mcp/src/feature_manager.py` đã được
 cập nhật để chỉ còn "dịch" kết quả `RetrievalService` sang format tool.
 
 Sau này nếu có một chatbot/service KHÁC (không qua MCP) cần dữ liệu
@@ -115,4 +115,4 @@ Xem `rag/config/rag_config.py` — dùng chung file `.env` ở project root
 với các biến: `ARCHIVE_API_BASE_URL`, `ARCHIVE_API_PATH`,
 `ARCHIVE_API_PAGE_SIZE`, `QDRANT_URL`, `QDRANT_API_KEY`,
 `DENSE_MODEL_NAME`, `SPARSE_MODEL_NAME`, `DENSE_VECTOR_SIZE`,
-`CHUNK_SIZE_CHARS`, `CHUNK_OVERLAP_CHARS`, `MD_FILE_URL_FIELD`.
+`CHUNK_SIZE_CHARS`, `CHUNK_OVERLAP_CHARS`, `SCORE_GAP_RATIO`.

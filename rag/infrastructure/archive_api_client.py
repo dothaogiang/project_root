@@ -10,6 +10,7 @@ import httpx
 
 from rag.config.rag_config import rag_config
 from rag.domain.entities import ArchiveRecord
+from rag.infrastructure.retry import retry_http_transient
 from rag.ports.interfaces import ArchiveApiClientPort
 from rag.logger import get_logger
 
@@ -62,6 +63,7 @@ class HttpArchiveApiClient(ArchiveApiClientPort):
             )
         return self._client
 
+    @retry_http_transient
     async def fetch_page(self, page: int, page_size: int) -> tuple[list[ArchiveRecord], bool]:
         client = self._require_client()
         url = f"{self._base_url}{self._path}"

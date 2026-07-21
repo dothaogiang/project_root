@@ -66,8 +66,9 @@ project_root/
 │   │   ├── config/configs.py     # Cấu hình riêng của MCP (port, resources dir, archive API paths, token...)
 │   │   └── tools/
 │   │       ├── manager.py
-│   │       └── registry.py       # Đọc tools.yaml, tự đăng ký tool theo tên hàm khớp
-│   ├── Resources/tools.yaml      # Khai báo 6 tool + input schema
+│   │       ├── registry.py       # Đọc tools.yaml, tự đăng ký tool theo tên hàm khớp
+│   │       └── response_builders.py # Helper format response/tool payload
+│   ├── Resources/tools.yaml      # Khai báo 4 tool + input schema
 │   └── requirements.txt          # Dependency riêng của mcp/
 │
 ├── rag/                          # Chỉ lo dữ liệu — ingest vào Qdrant & truy vấn ra

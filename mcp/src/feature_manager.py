@@ -18,17 +18,41 @@ file YAML, không cần đụng vào registry.py hay server.py.
     documents[].markdown nên không cần tool "detail" riêng để lấy
     nội dung khi tìm được qua nhánh khớp chính xác.
 """
+import asyncio
 import functools
 import traceback
 
 from archive_api.client import get_archive_api_client
 from config.configs import config_object
 from rag.retrieval_factory import get_retrieval_service
+from tools.response_builders import (
+    BRIEF_FIELDS,
+    SEMANTIC_FALLBACK_FILTER_NOTE,
+    chunk_to_dict,
+    compact_record,
+    extract_file_key,
+    fetch_files_for_profiles,
+    files_from_record,
+    normalize_vn,
+    profile_to_record,
+)
 from logger import get_logger
-from urllib.parse import urlparse, parse_qs
-from typing import Optional
 
 logger = get_logger(__name__)
+
+# QUAN TRỌNG: RetrievalService (rag/application/retrieval_service.py) là
+# CODE ĐỒNG BỘ (fastembed.embed_text chạy inference ONNX trên CPU,
+# QdrantClient là client SYNC, không phải AsyncQdrantClient) — gọi
+# thẳng nó trong 1 tool `async def` sẽ CHẶN LUÔN event loop của server
+# trong lúc embed + query Qdrant, khiến MỌI tool call khác (của user
+# khác, hoàn toàn không liên quan) phải xếp hàng chờ, dù server chạy
+# streamable-http phục vụ nhiều client đồng thời trên 1 event loop.
+# Mọi lệnh gọi vào RetrievalService bên dưới đều PHẢI bọc qua
+# `asyncio.to_thread(...)` để nhường event loop cho các tool call khác
+# — giống hệt cách IngestionService đã làm với embed_batch/upsert khi
+# ingest (xem comment trong ingestion_service.py), chỉ khác là ở đây
+# quan trọng hơn vì đây là đường phục vụ user thật (latency/throughput
+# ảnh hưởng trực tiếp trải nghiệm), không phải job chạy nền 1 lần.
 
 # Số ĐOẠN TEXT (chunk nội dung) tối đa trả về cho các tool RAG:
 # get_profile_detail, find_profile_and_answer, search_content. Giữ nhỏ
@@ -50,44 +74,6 @@ def _clamp_top_k(value: int, max_value: int = MAX_TOP_K) -> int:
     if value is None:
         return max_value
     return min(value, max_value)
-
-
-def _extract_file_key(file_url: Optional[str]) -> Optional[str]:
-    """Tách 'key' từ URL dạng .../files/proxy?key=xxx — trả về đã decode sẵn."""
-    if not file_url:
-        return None
-    parsed = urlparse(file_url)
-    qs = parse_qs(parsed.query)
-    values = qs.get("key")
-    return values[0] if values else None
-
-
-def _normalize_vn(text: Optional[str]) -> str:
-    """Chỉ lowercase, CỐ Ý KHÔNG bỏ dấu thanh (sắc/huyền/hỏi/ngã/nặng) —
-    tiếng Việt có dấu là 2 từ khác nghĩa (VD "Hoa" tên người khác hẳn
-    "Hóa" trong "Hóa đơn"/"Hòa" trong "Hòa Khánh"). Bỏ dấu sẽ khiến các
-    từ này bị coi là khớp nhau, đúng vào lỗi đang cần sửa (search "Hoa"
-    ra nhầm "Hóa đơn", "Hòa Khánh")."""
-    return (text or "").lower()
-
-
-def _compact_record(record: dict) -> dict:
-    """Bỏ các field null/rỗng khỏi record (staffMetadata: [], shelfCode:
-    null...) — không mất thông tin (thiếu field = rỗng), chỉ giảm số ký
-    tự phải trả về khi có nhiều hồ sơ, phần lớn hồ sơ không dùng hết
-    các field optional này."""
-    return {k: v for k, v in record.items() if v not in (None, [], "")}
-
-
-# Field thiết yếu để LIỆT KÊ/xác định hồ sơ (dùng cho search_archives
-# khi brief=True — mặc định, tối ưu cho lần gọi đầu tiên). Có "files"
-# (fileName + fileKey + fileUrl) để LLM/người dùng lấy link file ngay
-# ở lần gọi đầu, không cần gọi thêm brief=False chỉ để lấy link.
-BRIEF_FIELDS = {
-    "id", "title", "arcFileCode", "status", "warehouseName",
-    "roomNumber", "shelfCode", "shelfLevelCode",
-    "startDate", "endDate", "hasFiles", "title_match", "files",
-}
 
 def catch_tool_errors(func):
     """
@@ -128,54 +114,6 @@ def catch_tool_errors(func):
     return wrapper
 
 
-def _files_from_record(record: dict) -> list[dict]:
-    """Trích 'files' (fileName + fileKey + fileUrl) từ 1 record thô của
-    Public Archive API (projects[].documents[]) — dùng chung cho cả
-    nhánh keyword-match và nhánh enrich semantic_fallback bên dưới."""
-    files = []
-    for project in record.get("projects", []):
-        for doc in project.get("documents", []):
-            files.append({
-                "fileName": doc.get("fileName"),
-                "fileKey": _extract_file_key(doc.get("fileUrl")),
-                "fileUrl": doc.get("fileUrl"),
-            })
-    return files
-
-
-async def _fetch_files_for_profiles(client, profiles: list) -> dict[str, list[dict]]:
-    """Qdrant (semantic search) KHÔNG lưu file/fileUrl trong payload —
-    RetrievedProfile chỉ có metadata hồ sơ (title, mã, kệ, kho...).
-    Để trả link thật cho các hồ sơ tìm được qua semantic_fallback, gọi
-    lại LIVE Archive API theo `arcFileCode` (định danh khớp CHÍNH XÁC,
-    không mơ hồ như tên người) rồi lấy files từ record trả về. Chỉ 1
-    lượt gọi (client tự fan-out song song nếu nhiều mã), không cần
-    re-ingest lại toàn bộ Qdrant chỉ để thêm field này.
-
-    Trả về dict archive_id (str) -> list files. Nếu gọi lỗi (API down,
-    timeout...), trả về {} và log lỗi — KHÔNG làm hỏng luôn cả response
-    semantic_fallback chỉ vì bước enrich phụ này thất bại.
-    """
-    codes = list({p.arc_file_code for p in profiles if p.arc_file_code})
-    if not codes:
-        return {}
-    try:
-        result = await client.search_archives(keywords=codes, size=max(len(codes) * 2, 20))
-    except Exception:
-        logger.exception("Không lấy được files/link thật cho semantic fallback profiles")
-        return {}
-
-    files_by_id: dict[str, list[dict]] = {}
-    for record in result.get("content", []):
-        rid = record.get("id")
-        if rid is None:
-            continue
-        files = _files_from_record(record)
-        if files:
-            files_by_id[str(rid)] = files
-    return files_by_id
-
-
 class FeatureManager:
 
     @staticmethod
@@ -191,7 +129,8 @@ class FeatureManager:
         giá trị lớn hơn.
         """
         service = get_retrieval_service()
-        chunks = service.search_chunks_in_archive(
+        chunks = await asyncio.to_thread(
+            service.search_chunks_in_archive,
             archive_id=archive_id, question=question, top_k=_clamp_top_k(top_k)
         )
 
@@ -208,16 +147,7 @@ class FeatureManager:
             "archive_id": archive_id,
             "question": question,
             "found": True,
-            "chunks": [
-                {
-                    "text": c.text,
-                    "file_url": c.file_url,
-                    "page_number": c.page_number,
-                    "extraction_method": c.extraction_method,
-                    "score": c.score,
-                }
-                for c in chunks
-            ],
+            "chunks": [chunk_to_dict(c) for c in chunks],
         }
 
     # ────────────────────────────────────────────────────────────────
@@ -242,7 +172,8 @@ class FeatureManager:
         top_k luôn bị ép về tối đa MAX_TOP_K (5).
         """
         service = get_retrieval_service()
-        profile, chunks = service.find_profile_and_answer(
+        profile, chunks = await asyncio.to_thread(
+            service.find_profile_and_answer,
             key=key, question=question, top_k=_clamp_top_k(top_k)
         )
 
@@ -269,16 +200,7 @@ class FeatureManager:
                 "Tìm thấy hồ sơ khớp với key nhưng không có đoạn nội dung nào "
                 "liên quan đến câu hỏi. Đừng tự suy đoán hoặc bịa thông tin."
             ),
-            "chunks": [
-                {
-                    "text": c.text,
-                    "file_url": c.file_url,
-                    "page_number": c.page_number,
-                    "extraction_method": c.extraction_method,
-                    "score": c.score,
-                }
-                for c in chunks
-            ],
+            "chunks": [chunk_to_dict(c) for c in chunks],
         }
 
     # ────────────────────────────────────────────────────────────────
@@ -303,7 +225,9 @@ class FeatureManager:
         top_k luôn bị ép về tối đa MAX_TOP_K (5).
         """
         service = get_retrieval_service()
-        chunks = service.search_chunks_all(question=question, top_k=_clamp_top_k(top_k))
+        chunks = await asyncio.to_thread(
+            service.search_chunks_all, question=question, top_k=_clamp_top_k(top_k)
+        )
 
         return {
             "question": question,
@@ -322,18 +246,7 @@ class FeatureManager:
                 "Không tìm thấy đoạn nội dung nào liên quan trong bất kỳ hồ sơ nào. "
                 "Hãy báo người dùng là không có kết quả, đừng tự suy đoán hoặc bịa thông tin."
             ),
-            "chunks": [
-                {
-                    "archive_id": c.archive_id,
-                    "text": c.text,
-                    "file_url": c.file_url,
-                    "page_number": c.page_number,
-                    "project_name": c.project_name,
-                    "extraction_method": c.extraction_method,
-                    "score": c.score,
-                }
-                for c in chunks
-            ],
+            "chunks": [chunk_to_dict(c, with_archive_id=True) for c in chunks],
         }
 
     # ────────────────────────────────────────────────────────────────
@@ -423,7 +336,7 @@ class FeatureManager:
             page_info["size"] = size
             result["page"] = page_info
 
-        normalized_keywords = [_normalize_vn(k) for k in clean_keywords]
+        normalized_keywords = [normalize_vn(k) for k in clean_keywords]
 
         for record in result.get("content", []):
             record["hasFiles"] = bool(record.get("projects"))
@@ -431,28 +344,14 @@ class FeatureManager:
             if include_full_content:
                 for project in record.get("projects", []):
                     project["fileKeys"] = [
-                        _extract_file_key(u) for u in project.get("fileUrls", [])
+                        extract_file_key(u) for u in project.get("fileUrls", [])
                     ]
             else:
-                # Cắt gọn: thay "projects" (kèm fileUrls dài + markdown OCR
-                # đầy đủ của từng document, rất nặng) bằng 1 danh sách
-                # "files" phẳng, chỉ gồm tên file + fileKey — đủ để LLM
-                # biết hồ sơ có file gì và gọi get_profile_detail khi cần
-                # đọc nội dung, mà không phải tải kèm toàn bộ markdown OCR
-                # của MỌI hồ sơ khớp keyword (kể cả hồ sơ không liên quan).
-                files = _files_from_record(record)
+                files = files_from_record(record)
                 record["files"] = files
                 record.pop("projects", None)
 
-            # Public Archive API khớp keyword trên NHIỀU field ẩn (không
-            # chỉ title) nên trả về nhiều hồ sơ chỉ liên quan mờ nhạt
-            # (VD tìm "Hoa" ra cả "KCN Hòa Khánh", hồ sơ TEST không thấy
-            # "Hoa" ở đâu). "title_match" đánh dấu record có khớp NGAY
-            # TRONG title/arcFileCode hay không (bỏ dấu, không phân biệt
-            # hoa/thường) — KHÔNG loại bỏ các record còn lại (tránh mất
-            # dữ liệu, vì có thể khách vẫn cần các field khác), chỉ gắn
-            # cờ để LLM biết ưu tiên record nào khi trả lời/tóm tắt.
-            haystack = _normalize_vn(f"{record.get('title', '')} {record.get('arcFileCode', '')}")
+            haystack = normalize_vn(f"{record.get('title', '')} {record.get('arcFileCode', '')}")
             record["title_match"] = bool(normalized_keywords) and any(
                 kw in haystack for kw in normalized_keywords
             )
@@ -473,11 +372,11 @@ class FeatureManager:
             # fileKey (không tool nào khác trong hệ thống dùng tới),
             # borrowItems, staffMetadata, description, ngày tạo/sửa...
             result["content"] = [
-                _compact_record({k: v for k, v in record.items() if k in BRIEF_FIELDS})
+                compact_record({k: v for k, v in record.items() if k in BRIEF_FIELDS})
                 for record in result["content"]
             ]
         else:
-            result["content"] = [_compact_record(r) for r in result["content"]]
+            result["content"] = [compact_record(r) for r in result["content"]]
 
         if result.get("content"):
             result["search_mode"] = "keyword"
@@ -496,29 +395,17 @@ class FeatureManager:
             if clean_keywords and total_elements > len(result["content"]):
                 merged_keyword = " ".join(clean_keywords)
                 service = get_retrieval_service()
-                extra_profiles = service.search_profiles(keyword=merged_keyword, top_k=size)
-                extra_files_by_id = await _fetch_files_for_profiles(client, extra_profiles)
+                extra_profiles = await asyncio.to_thread(
+                    service.search_profiles, keyword=merged_keyword, top_k=size
+                )
+                extra_files_by_id = await fetch_files_for_profiles(client, extra_profiles)
 
                 existing_ids = {
                     str(record.get("id")) for record in result["content"]
                     if record.get("id") is not None
                 }
                 appended = [
-                    {
-                        "id": p.archive_id,
-                        "title": p.title,
-                        "arcFileCode": p.arc_file_code,
-                        "shelfCode": p.shelf_code,
-                        "shelfLevelCode": p.shelf_level_code,
-                        "warehouseName": p.warehouse_name,
-                        "startDate": p.start_date,
-                        "endDate": p.end_date,
-                        "staffMetadata": p.staff_metadata,
-                        "hasFiles": bool(extra_files_by_id.get(str(p.archive_id))),
-                        "files": extra_files_by_id.get(str(p.archive_id), []),
-                        "_score": p.score,
-                        "_source": "semantic_fallback",
-                    }
+                    profile_to_record(p, extra_files_by_id, source="semantic_fallback")
                     for p in extra_profiles
                     if str(p.archive_id) not in existing_ids
                 ]
@@ -560,7 +447,9 @@ class FeatureManager:
 
         merged_keyword = " ".join(clean_keywords)
         service = get_retrieval_service()
-        profiles = service.search_profiles(keyword=merged_keyword, top_k=_clamp_top_k(size))
+        profiles = await asyncio.to_thread(
+            service.search_profiles, keyword=merged_keyword, top_k=_clamp_top_k(size)
+        )
 
         if not profiles:
             return {
@@ -577,39 +466,15 @@ class FeatureManager:
 
         fallback_note = None
         if has_other_filters:
-            fallback_note = (
-                # "Live API không tìm thấy hồ sơ khớp CHÍNH XÁC theo keywords và các "
-                # "filter đã truyền (status/warehouse/ngôn ngữ/ngày...). Danh sách dưới "
-                # "đây là ứng viên GẦN ĐÚNG lấy từ semantic search — LƯU Ý: semantic "
-                # "search KHÔNG áp dụng lại các filter đó, nên các hồ sơ này có thể nằm "
-                # "ngoài điều kiện status/warehouse/ngày đã yêu cầu, cần tự kiểm tra lại "
-                # "trước khi trả lời. Đừng khẳng định chắc chắn đây là hồ sơ người dùng "
-                # "cần, hãy hỏi lại để xác nhận nếu có nhiều ứng viên."
-            )
+            fallback_note = SEMANTIC_FALLBACK_FILTER_NOTE
 
-        files_by_id = await _fetch_files_for_profiles(client, profiles)
+        files_by_id = await fetch_files_for_profiles(client, profiles)
 
         return {
             "search_mode": "semantic_fallback",
             "keywords": clean_keywords,
             "found": True,
             "note": fallback_note,
-            "content": [
-                {
-                    "id": p.archive_id,
-                    "title": p.title,
-                    "arcFileCode": p.arc_file_code,
-                    "shelfCode": p.shelf_code,
-                    "shelfLevelCode": p.shelf_level_code,
-                    "warehouseName": p.warehouse_name,
-                    "startDate": p.start_date,
-                    "endDate": p.end_date,
-                    "staffMetadata": p.staff_metadata,
-                    "hasFiles": bool(files_by_id.get(str(p.archive_id))),
-                    "files": files_by_id.get(str(p.archive_id), []),
-                    "_score": p.score,
-                }
-                for p in profiles
-            ],
+            "content": [profile_to_record(p, files_by_id) for p in profiles],
             "page": {"size": size, "number": 0, "totalElements": len(profiles), "totalPages": 1},
         }

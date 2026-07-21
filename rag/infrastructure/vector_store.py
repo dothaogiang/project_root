@@ -3,7 +3,7 @@ infrastructure/vector_store.py — Adapter thao tác Qdrant. Implement
 VectorStorePort.
 
 2 collection:
-  - "archives"        : 1 point = 1 hồ sơ (metadata) -> phục vụ search_profile
+  - "archives"        : 1 point = 1 hồ sơ (metadata) -> phục vụ search_profiles
   - "document_chunks" : 1 point = 1 đoạn text trích từ PDF -> phục vụ
                          get_profile_detail (filter theo archive_id)
 """
@@ -14,6 +14,7 @@ from qdrant_client import QdrantClient, models
 
 from rag.config.rag_config import rag_config
 from rag.domain.entities import ArchiveRecord, DocumentChunk, Embedding, RetrievedChunk, RetrievedProfile
+from rag.infrastructure.retry import retry_qdrant_transient
 from rag.ports.interfaces import VectorStorePort
 from rag.logger import get_logger
 
@@ -72,6 +73,7 @@ class QdrantVectorStore(VectorStorePort):
             self._client = QdrantClient(url=rag_config.QDRANT_URL, api_key=rag_config.QDRANT_API_KEY)
         return self._client
 
+    @retry_qdrant_transient
     def ensure_collections(self) -> None:
         client = self._client_ready()
         vectors_config = {
@@ -92,6 +94,7 @@ class QdrantVectorStore(VectorStorePort):
             else:
                 logger.info(f"Collection đã tồn tại: {collection}")
 
+    @retry_qdrant_transient
     def upsert_archive(self, archive: ArchiveRecord, embedding: Embedding) -> None:
         client = self._client_ready()
         payload = {
@@ -121,9 +124,15 @@ class QdrantVectorStore(VectorStorePort):
             ],
         )
 
+    @retry_qdrant_transient
     def upsert_chunks(self, chunks: list[DocumentChunk], embeddings: list[Embedding]) -> None:
         if not chunks:
             return
+        if len(chunks) != len(embeddings):
+            raise ValueError(
+                f"Embedding count mismatch: got {len(embeddings)} embeddings for {len(chunks)} chunks"
+            )
+
         client = self._client_ready()
         points = []
         for chunk, emb in zip(chunks, embeddings):
@@ -147,6 +156,7 @@ class QdrantVectorStore(VectorStorePort):
             )
         client.upsert(collection_name=rag_config.COLLECTION_CHUNKS, points=points)
 
+    @retry_qdrant_transient
     def delete_chunks_by_file(self, archive_id: str, file_url: str) -> None:
         client = self._client_ready()
         file_key = _stable_file_key(file_url)
@@ -162,6 +172,7 @@ class QdrantVectorStore(VectorStorePort):
             ),
         )
 
+    @retry_qdrant_transient
     def _hybrid_search(self, collection: str, embedding: Embedding, limit: int, query_filter=None):
         client = self._client_ready()
         result = client.query_points(

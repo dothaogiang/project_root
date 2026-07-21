@@ -35,6 +35,18 @@ def _safe(text: str) -> str:
     return text if text and text.strip() else " "
 
 
+def warm_up() -> None:
+    """Ép load model dense + sparse NGAY LẬP TỨC, thay vì chờ tới lần
+    embed_text()/embed_batch() đầu tiên (@lru_cache chỉ load lazy khi
+    được gọi). Load model tốn vài giây (đọc weight từ đĩa/tải về nếu
+    chưa cache) — nếu để lazy, chính REQUEST ĐẦU TIÊN của người dùng
+    thật phải gánh khoản chờ này. Gọi hàm này 1 lần lúc server khởi
+    động (server.py) để trả giá cold-start trước khi nhận traffic,
+    không phải trong lúc đang phục vụ user."""
+    _dense_model()
+    _sparse_model()
+
+
 class FastEmbedProvider(EmbeddingProviderPort):
     def embed_text(self, text: str) -> Embedding:
         text = _safe(text)

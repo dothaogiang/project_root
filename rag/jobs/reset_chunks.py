@@ -1,17 +1,13 @@
 """
-rag/jobs/reset_chunks.py — Xóa sạch collection 'document_chunks' (giữ
-nguyên 'archives') rồi tạo lại rỗng, dùng 1 LẦN sau khi fix bug trùng
-lặp chunk do đổi host API (xem _stable_file_key trong vector_store.py).
+Delete and recreate the document chunk collection.
 
-Vì "archives" không bị ảnh hưởng bởi bug này (point ID không phụ thuộc
-file_url), KHÔNG cần xóa "archives" — chỉ cần xóa "document_chunks" rồi
-chạy lại `python -m rag.jobs.sync_job` để ingest lại sạch với code mới
-(dùng file_key ổn định, không phụ thuộc host).
+This is intentionally guarded because it removes indexed content from Qdrant.
+Run it only when you explicitly want to rebuild chunks from scratch:
 
-Chạy:
-    python rag/jobs/reset_chunks.py
-    (rồi ngay sau đó: python -m rag.jobs.sync_job)
+    python -m rag.jobs.reset_chunks --yes
+    python -m rag.jobs.sync_job
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -21,15 +17,38 @@ from qdrant_client import QdrantClient
 
 from rag.config.rag_config import rag_config
 
-client = QdrantClient(url=rag_config.QDRANT_URL, api_key=rag_config.QDRANT_API_KEY)
 
-collection = rag_config.COLLECTION_CHUNKS
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Delete the Qdrant document chunk collection.")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm deletion of the configured chunk collection.",
+    )
+    return parser.parse_args()
 
-if client.collection_exists(collection):
-    before = client.count(collection_name=collection).count
-    client.delete_collection(collection_name=collection)
-    print(f"Đã xóa collection '{collection}' (trước đó có {before} point).")
-else:
-    print(f"Collection '{collection}' chưa tồn tại, không cần xóa.")
 
-print("Giờ chạy: python -m rag.jobs.sync_job  (sẽ tự tạo lại collection rỗng và ingest lại sạch)")
+def main() -> int:
+    args = parse_args()
+    collection = rag_config.COLLECTION_CHUNKS
+
+    if not args.yes:
+        print(f"Refusing to delete collection '{collection}' without --yes.")
+        print("Run: python -m rag.jobs.reset_chunks --yes")
+        return 2
+
+    client = QdrantClient(url=rag_config.QDRANT_URL, api_key=rag_config.QDRANT_API_KEY)
+
+    if client.collection_exists(collection):
+        before = client.count(collection_name=collection).count
+        client.delete_collection(collection_name=collection)
+        print(f"Deleted collection '{collection}' ({before} points).")
+    else:
+        print(f"Collection '{collection}' does not exist; nothing to delete.")
+
+    print("Now run: python -m rag.jobs.sync_job")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

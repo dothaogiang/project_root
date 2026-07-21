@@ -39,5 +39,14 @@ class Config:
     CHATBOT_CLIENT_ID = os.getenv("CHATBOT_CLIENT_ID", "")
     CHATBOT_CLIENT_SECRET = os.getenv("CHATBOT_CLIENT_SECRET", "")
 
+    # Trần số lượng keyword được fan-out song song trong 1 lần gọi
+    # search_archives (mỗi keyword = 1 request riêng qua asyncio.gather).
+    # Không giới hạn sẽ để LLM phía chatbot vô tình truyền quá nhiều biến
+    # thể từ khóa trong 1 lượt, bắn hàng chục request đồng thời vào chính
+    # Archive API nội bộ. Các keyword vượt trần bị cắt bớt (giữ đúng thứ
+    # tự được truyền vào), không báo lỗi — đủ dùng cho use case thực tế
+    # (VD tên có dấu + không dấu + viết tắt thường chỉ 2-4 biến thể).
+    MAX_KEYWORDS_FANOUT = int(os.getenv("MAX_KEYWORDS_FANOUT", "8"))
+
 
 config_object = Config()

@@ -56,15 +56,6 @@ class ArchiveRecord:
 
 
 @dataclass
-class ExtractedPage:
-    """Text trích được từ 1 trang PDF, kèm phương pháp đã dùng."""
-
-    page_number: int
-    text: str
-    extraction_method: str  # "native" | "ocr"
-
-
-@dataclass
 class DocumentChunk:
     """1 đoạn text đã được chia nhỏ, sẵn sàng để embed và lưu vào Qdrant."""
 

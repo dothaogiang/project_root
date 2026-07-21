@@ -2,7 +2,7 @@
 rag/ — Module RAG (Retrieval-Augmented Generation) độc lập.
 
 Trách nhiệm DUY NHẤT của module này: lấy hồ sơ từ Public Archive API,
-xử lý (extract/OCR PDF, chunk, embed) và lưu vào Qdrant, đồng thời cung
+xử lý (extract/OCR MD, chunk, embed) và lưu vào Qdrant, đồng thời cung
 cấp cổng truy vấn (retrieval) cho tầng khác dùng (MCP tools, chatbot...).
 
 Module này KHÔNG biết gì về MCP, FastMCP, hay tools.yaml — nó chỉ quan

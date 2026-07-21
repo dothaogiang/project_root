@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from tools.registry import ToolRegistry
 from logger import get_logger
 from archive_api.client import get_archive_api_client
+from rag.infrastructure.embedding_provider import warm_up as warm_up_embedding_models
 
 logger = get_logger(__name__)
 
@@ -24,6 +25,14 @@ async def main():
 
 if __name__ == "__main__":
     server_mcp = asyncio.run(main())
+
+    # Load model dense + sparse NGAY BÂY GIỜ (trước khi nhận request),
+    # không để lazy tới lần embed đầu tiên — tránh request đầu tiên của
+    # user thật phải chờ cold-start vài giây. Xem embedding_provider.warm_up().
+    logger.info("Đang warm-up model embedding (dense + sparse)...")
+    warm_up_embedding_models()
+    logger.info("Warm-up xong.")
+
     logger.info("Server sẵn sàng, bắt đầu lắng nghe...")
     try:
         server_mcp.run(transport="streamable-http")
